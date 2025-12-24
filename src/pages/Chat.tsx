@@ -41,7 +41,7 @@ type MarketWidgetState = {
 const Chat = () => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { user, initialChatMessage, setInitialChatMessage } = useAuth();
+  const { user, initialChatMessage, setInitialChatMessage, setShowAuthModal } = useAuth();
 
   // Курс USD -> RUB (примерный курс на 2025 год)
   const USD_TO_RUB_RATE = 85;
@@ -170,8 +170,8 @@ const Chat = () => {
     const initializeSession = async () => {
       // Проверяем аутентификацию пользователя
       if (!user) {
-        console.log('User not authenticated, redirecting to login...');
-        navigate('/');
+        console.log('User not authenticated, showing auth modal...');
+        setShowAuthModal(true);
         return;
       }
 

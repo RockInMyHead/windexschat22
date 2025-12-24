@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Auth Debug Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .debug { background: #f5f5f5; padding: 10px; border-radius: 5px; margin: 10px 0; }
+        button { padding: 10px 20px; margin: 5px; cursor: pointer; }
+        .success { color: green; }
+        .error { color: red; }
+    </style>
+</head>
+<body>
+    <h1>🔍 Authentication Debug Test</h1>
+
+    <div class="debug">
+        <h3>localStorage Status:</h3>
+        <div id="localStorageStatus">Loading...</div>
+    </div>
+
+    <div class="debug">
+        <h3>API Tests:</h3>
+        <button onclick="testHealth()">Test /api/health</button>
+        <button onclick="testDebug()">Test /api/debug</button>
+        <button onclick="testSessions()">Test /api/sessions (should fail without auth)</button>
+        <button onclick="testAuth()">Test /api/users/current</button>
+        <button onclick="clearStorage()">Clear localStorage</button>
+    </div>
+
+    <div class="debug">
+        <h3>Results:</h3>
+        <div id="results"></div>
+    </div>
+
+    <script>
+        const BASE_URL = 'https://cute-elliot-distinctively.ngrok-free.dev';
+
+        function log(message, type = 'info') {
+            const results = document.getElementById('results');
+            const time = new Date().toLocaleTimeString();
+            results.innerHTML += `<div class="${type}">[${time}] ${message}</div>`;
+            console.log(`[${time}] ${message}`);
+        }
+
+        function checkLocalStorage() {
+            const status = document.getElementById('localStorageStatus');
+            const user = localStorage.getItem('user');
+            const userId = localStorage.getItem('userId');
+            const isAuthenticated = localStorage.getItem('isAuthenticated');
+
+            status.innerHTML = `
+                <strong>user:</strong> ${user ? '✅ Set' : '❌ Not set'}<br>
+                <strong>userId:</strong> ${userId || '❌ Not set'}<br>
+                <strong>isAuthenticated:</strong> ${isAuthenticated || '❌ Not set'}
+            `;
+
+            if (user) {
+                try {
+                    const parsed = JSON.parse(user);
+                    status.innerHTML += `<br><strong>Parsed user:</strong> ${JSON.stringify(parsed, null, 2)}`;
+                } catch (e) {
+                    status.innerHTML += `<br><strong class="error">Parse error:</strong> ${e.message}`;
+                }
+            }
+        }
+
+        async function makeRequest(endpoint, options = {}) {
+            try {
+                const url = `${BASE_URL}${endpoint}`;
+                const userId = localStorage.getItem('userId');
+
+                const defaultOptions = {
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...(userId ? { 'x-user-id': userId } : {})
+                    }
+                };
+
+                const response = await fetch(url, { ...defaultOptions, ...options });
+                const data = await response.json();
+
+                log(`${endpoint}: ${response.status} ${response.statusText}`, response.ok ? 'success' : 'error');
+                if (data) log(`Response: ${JSON.stringify(data)}`);
+
+                return { response, data };
+            } catch (error) {
+                log(`Error calling ${endpoint}: ${error.message}`, 'error');
+                return { error };
+            }
+        }
+
+        async function testHealth() {
+            await makeRequest('/api/health');
+        }
+
+        async function testDebug() {
+            await makeRequest('/api/debug');
+        }
+
+        async function testSessions() {
+            await makeRequest('/api/sessions');
+        }
+
+        async function testAuth() {
+            const result = await makeRequest('/api/users/current', {
+                method: 'POST',
+                body: JSON.stringify({
+                    name: 'Test User',
+                    email: `test${Date.now()}@example.com`
+                })
+            });
+
+            if (result.data && result.data.id) {
+                log(`✅ Registration successful! User ID: ${result.data.id}`, 'success');
+                checkLocalStorage();
+            }
+        }
+
+        function clearStorage() {
+            localStorage.clear();
+            log('🧹 localStorage cleared', 'info');
+            checkLocalStorage();
+        }
+
+        // Initialize
+        checkLocalStorage();
+        log('🔍 Debug page loaded. Check console and localStorage status above.');
+    </script>
+</body>
+</html>

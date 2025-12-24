@@ -44,17 +44,32 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     // Проверяем, есть ли сохраненная аутентификация при загрузке
     const savedUser = localStorage.getItem('user');
     const savedAuth = localStorage.getItem('isAuthenticated');
+    const savedUserId = localStorage.getItem('userId');
+
+    console.log('🔍 AuthContext: Checking localStorage on app start:', {
+      savedUser: !!savedUser,
+      savedAuth,
+      savedUserId,
+      currentUrl: window.location.href
+    });
 
     if (savedUser && savedAuth === 'true') {
       try {
         const parsedUser = JSON.parse(savedUser);
         setUser(parsedUser);
         setIsAuthenticated(true);
+        console.log('✅ AuthContext: User restored from localStorage:', parsedUser);
       } catch (error) {
-        console.error('Error parsing saved user:', error);
+        console.error('❌ AuthContext: Failed to parse saved user:', error);
+        // Очищаем поврежденные данные
         localStorage.removeItem('user');
         localStorage.removeItem('isAuthenticated');
+        localStorage.removeItem('userId');
+        setShowAuthModal(true);
       }
+    } else {
+      console.log('ℹ️ AuthContext: No authentication found, showing auth modal');
+      setShowAuthModal(true);
     }
   }, []);
 
@@ -70,6 +85,8 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     setIsAuthenticated(false);
     localStorage.removeItem('user');
     localStorage.removeItem('isAuthenticated');
+    localStorage.removeItem('userId');
+    console.log('👋 AuthContext: User logged out');
   };
 
   const value = {

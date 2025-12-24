@@ -1686,6 +1686,15 @@ app.get('/api/debug', (req, res) => {
   }
 });
 
+// Debug endpoint for checking authentication state
+app.get('/api/debug-auth', (req, res) => {
+  res.json({
+    message: 'Check browser console for localStorage debug info',
+    instructions: 'Open browser dev tools and check Application > Local Storage',
+    server_time: new Date().toISOString()
+  });
+});
+
 // Test endpoint for context checking
 app.post('/api/test-context', (req, res) => {
   const { messages } = req.body;
