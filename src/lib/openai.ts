@@ -1480,7 +1480,7 @@ async function callArtifactModel(
 
   if (!resp.ok) {
     throw new Error(`Artifact API failed: ${resp.status} ${resp.statusText}`);
-  }
+    }
 
   const data = await resp.json();
 
@@ -1732,7 +1732,7 @@ body {
       artifact: parsed.artifact,
       assistantText: parsed.assistantText || 'Я создал для вас веб-сайт!'
     };
-}
+  }
 
 export const sendChatMessage = async (
   messages: Message[],

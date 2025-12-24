@@ -387,10 +387,10 @@ export class DatabaseService {
   // Работа с пользователями и кошельком
   static createUser(username, email, initialBalance = 0.0) {
     try {
-      const now = Date.now();
-      const result = insertUserStmt.run(username, email, initialBalance, now, now);
+    const now = Date.now();
+    const result = insertUserStmt.run(username, email, initialBalance, now, now);
       console.log('🗄️ createUser result:', { changes: result.changes, lastInsertRowid: result.lastInsertRowid });
-      return result.lastInsertRowid;
+    return result.lastInsertRowid;
     } catch (error) {
       console.error('❌ createUser error:', error);
       return 0;

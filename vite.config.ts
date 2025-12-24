@@ -12,7 +12,9 @@ export default defineConfig(({ mode }) => ({
     strictPort: false,
     allowedHosts: [
       'localhost',
-      '127.0.0.1'
+      '127.0.0.1',
+      'cute-elliot-distinctively.ngrok-free.dev',
+      '.ngrok-free.dev'
     ],
     hmr: {
       overlay: false, // Disable error overlay on mobile
