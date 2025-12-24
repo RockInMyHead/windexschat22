@@ -1609,6 +1609,60 @@ app.post("/api/users/:id/deduct-tokens", (req, res) => {
   }
 });
 
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  const deepseekKey = process.env.DEEPSEEK_API_KEY;
+  const openaiKey = process.env.OPENAI_API_KEY;
+
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    environment: {
+      node_env: process.env.NODE_ENV,
+      port: process.env.PORT,
+      deepseek_key_configured: !!deepseekKey,
+      openai_key_configured: !!openaiKey,
+      deepseek_key_prefix: deepseekKey ? deepseekKey.substring(0, 10) + '...' : null,
+    },
+    database: {
+      path: DB_PATH,
+      initialized: true
+    }
+  });
+});
+
+// Debug endpoint for checking server status
+app.get('/api/debug', (req, res) => {
+  try {
+    // Проверяем базу данных
+    const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get().count;
+    const sessionCount = db.prepare('SELECT COUNT(*) as count FROM chat_sessions').get().count;
+    const messageCount = db.prepare('SELECT COUNT(*) as count FROM messages').get().count;
+
+    res.json({
+      status: 'debug_ok',
+      timestamp: new Date().toISOString(),
+      database: {
+        users: userCount,
+        sessions: sessionCount,
+        messages: messageCount
+      },
+      environment: {
+        deepseek_key: process.env.DEEPSEEK_API_KEY ? 'configured' : 'missing',
+        openai_key: process.env.OPENAI_API_KEY ? 'configured' : 'missing',
+        node_env: process.env.NODE_ENV,
+        port: process.env.PORT
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'debug_error',
+      error: error.message,
+      stack: error.stack
+    });
+  }
+});
+
 // Test endpoint for context checking
 app.post('/api/test-context', (req, res) => {
   const { messages } = req.body;
