@@ -3,6 +3,14 @@ import express from 'express';
 import cors from 'cors';
 import { ProxyAgent } from 'undici';
 import { DatabaseService } from './src/lib/database.js';
+
+// Явно инициализируем базу данных при запуске сервера
+console.log('🗄️ Initializing database service...');
+try {
+  DatabaseService.initDatabase?.();
+} catch (error) {
+  console.error('❌ Failed to initialize database:', error);
+}
 import { marketRouter } from './src/routes/market.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -325,7 +333,12 @@ app.post('/api/users/current', (req, res) => {
       return res.status(400).json({ error: 'Email is required' });
     }
 
-    console.log('👤 Getting/creating user:', name, email);
+    console.log('👤 Getting/creating user:', { id, name, email });
+    console.log('🔧 Environment check:', {
+      deepseek_key: !!process.env.DEEPSEEK_API_KEY,
+      node_env: process.env.NODE_ENV,
+      port: process.env.PORT
+    });
 
     // Сначала пытаемся найти существующего пользователя по email
     let user = DatabaseService.getUserByEmail(email);
@@ -348,17 +361,21 @@ app.post('/api/users/current', (req, res) => {
         uniqueEmail = `${baseEmail}_${counter}@${domain}`;
       }
 
+      console.log('🔄 Creating user with params:', { username, uniqueEmail, initialBalance });
+
       const userId = DatabaseService.createUser(username, uniqueEmail, initialBalance);
       console.log('✅ New user created with ID:', userId, 'email:', uniqueEmail);
 
       if (!userId) {
         console.error('❌ Failed to create user - no ID returned');
+        console.error('❌ Last database error:', DatabaseService.getLastError?.() || 'No error info');
         return res.status(500).json({ error: 'Failed to create user' });
-    }
+      }
 
+      console.log('🔄 Retrieving user by ID:', userId);
       user = DatabaseService.getUserById(userId);
-    if (!user) {
-        console.error('❌ Failed to retrieve created user');
+      if (!user) {
+        console.error('❌ Failed to retrieve created user with ID:', userId);
         return res.status(500).json({ error: 'Failed to retrieve user' });
       }
 
@@ -374,8 +391,14 @@ app.post('/api/users/current', (req, res) => {
     console.log('✅ User response prepared:', responseUser.id, responseUser.email);
     res.json(responseUser);
   } catch (error) {
-    console.error('Get current user error:', error);
-    res.status(500).json({ error: 'Failed to get current user' });
+    console.error('❌ Get current user error:', error);
+    console.error('❌ Error stack:', error.stack);
+    console.error('❌ Error message:', error.message);
+    res.status(500).json({
+      error: 'Failed to get current user',
+      details: error.message,
+      code: error.code || 'UNKNOWN_ERROR'
+    });
   }
 });
 
