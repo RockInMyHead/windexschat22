@@ -89,7 +89,7 @@ npm run mcp
 ### Создание артефакта вручную
 
 ```bash
-curl -X POST http://localhost:1062/api/artifacts \
+curl -X POST https://ai.windexs.ru/api/artifacts \
   -H "Content-Type: application/json" \
   -d '{
     "sessionId": 1,
@@ -110,13 +110,13 @@ curl -X POST http://localhost:1062/api/artifacts \
 ### Получение артефакта
 
 ```bash
-curl http://localhost:1062/api/artifacts/1
+curl https://ai.windexs.ru/api/artifacts/1
 ```
 
 ### Получение всех артефактов сессии
 
 ```bash
-curl http://localhost:1062/api/sessions/1/artifacts
+curl https://ai.windexs.ru/api/sessions/1/artifacts
 ```
 
 ## Отладка

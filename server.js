@@ -121,8 +121,7 @@ app.use(cors({
     'http://ai.windexs.ru',
     'http://www.ai.windexs.ru',
     'https://ai.windexs.ru',
-    'http://127.0.0.1:8081',
-    'https://cute-elliot-distinctively.ngrok-free.dev'
+    'http://127.0.0.1:8081'
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],

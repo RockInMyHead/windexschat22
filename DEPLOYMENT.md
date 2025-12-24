@@ -47,7 +47,7 @@ server {
 
     # API прокси
     location /api {
-        proxy_pass http://localhost:80;
+        proxy_pass https://ai.windexs.ru;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';
@@ -143,4 +143,4 @@ pm2 restart windexs-ai
 - Логи сервера: `pm2 logs windexs-ai`
 - Переменные окружения: `cat .env`
 - Права доступа: `ls -la`
-- Сетевое подключение: `curl localhost:80/api/health`
+- Сетевое подключение: `curl https://ai.windexs.ru/api/health`
