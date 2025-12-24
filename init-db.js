@@ -1,10 +1,27 @@
-import { DatabaseService } from './src/lib/database.js';
+import { DatabaseService, initDatabase } from './src/lib/database.js';
 
 console.log('🗄️  Initializing database...');
 
-// Создаем тестового пользователя
-const testUserId = DatabaseService.createUser('Test User', 'test@example.com', 100.0);
-console.log(`✅ Created test user with ID: ${testUserId}`);
+// Инициализируем таблицы
+initDatabase();
+
+// Проверяем, существует ли тестовый пользователь
+let testUser = DatabaseService.getUserByEmail('test@example.com');
+let testUserId;
+
+if (testUser) {
+  console.log(`✅ Test user already exists with ID: ${testUser.id}`);
+  testUserId = testUser.id;
+} else {
+  // Создаем тестового пользователя
+  testUserId = DatabaseService.createUser('Test User', 'test@example.com', 100.0);
+  if (testUserId > 0) {
+    console.log(`✅ Created test user with ID: ${testUserId}`);
+  } else {
+    console.error('❌ Failed to create test user');
+    process.exit(1);
+  }
+}
 
 // Создаем тестовую сессию для проверки
 const sessionId = DatabaseService.createSession('Test Session', testUserId);

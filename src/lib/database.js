@@ -141,6 +141,12 @@ const createTables = () => {
 // Инициализация таблиц при первом запуске
 createTables();
 
+// Публичный метод для повторной инициализации (для init-db.js)
+export const initDatabase = () => {
+  console.log('🔄 Re-initializing database...');
+  createTables();
+};
+
 // Подготовка запросов
 const insertMessageStmt = db.prepare(`
   INSERT INTO messages (session_id, user_id, role, content, timestamp, artifact_id)
@@ -387,10 +393,23 @@ export class DatabaseService {
   // Работа с пользователями и кошельком
   static createUser(username, email, initialBalance = 0.0) {
     try {
-    const now = Date.now();
-    const result = insertUserStmt.run(username, email, initialBalance, now, now);
+      // Сначала проверяем, существует ли пользователь
+      const existingUser = this.getUserByEmail(email);
+      if (existingUser) {
+        console.log('🗄️ User already exists:', existingUser.id);
+        return existingUser.id;
+      }
+
+      const now = Date.now();
+      const result = insertUserStmt.run(username, email, initialBalance, now, now);
       console.log('🗄️ createUser result:', { changes: result.changes, lastInsertRowid: result.lastInsertRowid });
-    return result.lastInsertRowid;
+
+      if (result.changes > 0) {
+        return result.lastInsertRowid;
+      } else {
+        console.error('❌ createUser: no changes made');
+        return 0;
+      }
     } catch (error) {
       console.error('❌ createUser error:', error);
       return 0;
