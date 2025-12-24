@@ -41,7 +41,7 @@ type MarketWidgetState = {
 const Chat = () => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { user, initialChatMessage, setInitialChatMessage, setShowAuthModal } = useAuth();
+  const { user, isLoading, initialChatMessage, setInitialChatMessage, setShowAuthModal } = useAuth();
 
   // Курс USD -> RUB (примерный курс на 2025 год)
   const USD_TO_RUB_RATE = 85;
@@ -167,6 +167,14 @@ const Chat = () => {
 
   // Инициализация сессии и загрузка сообщений
   useEffect(() => {
+    // Ждем завершения загрузки аутентификации
+    if (isLoading) {
+      console.log('⏳ Waiting for authentication to load...');
+      return;
+    }
+
+    console.log('🔄 Initializing session, user authenticated:', !!user);
+
     const initializeSession = async () => {
       // Проверяем аутентификацию пользователя
       if (!user) {
@@ -224,7 +232,7 @@ const Chat = () => {
 
     initializeSession();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatSession.sessionId, initialChatMessage, location.state?.initialMessage]);
+  }, [isLoading, chatSession.sessionId, initialChatMessage, location.state?.initialMessage]);
 
 
   // Очистка ресурсов при размонтировании
@@ -375,6 +383,18 @@ const Chat = () => {
       console.error('Error loading chat:', error);
     }
   };
+
+  // Показываем индикатор загрузки пока проверяется аутентификация
+  if (isLoading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-background">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
+          <p className="text-muted-foreground">Проверяем авторизацию...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <SidebarProvider>

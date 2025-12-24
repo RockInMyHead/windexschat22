@@ -9,6 +9,7 @@ interface User {
 interface AuthContextType {
   user: User | null;
   isAuthenticated: boolean;
+  isLoading: boolean;
   login: (user: User) => void;
   logout: () => void;
   showAuthModal: boolean;
@@ -36,6 +37,7 @@ interface AuthProviderProps {
 export const AuthProvider = ({ children }: AuthProviderProps) => {
   const [user, setUser] = useState<User | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [pendingMessage, setPendingMessage] = useState<string | null>(null);
   const [initialChatMessage, setInitialChatMessage] = useState<string | null>(null);
@@ -44,20 +46,26 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     // Проверяем, есть ли сохраненная аутентификация при загрузке
     const savedUser = localStorage.getItem('user');
     const savedAuth = localStorage.getItem('isAuthenticated');
-    const savedUserId = localStorage.getItem('userId');
 
     console.log('🔍 AuthContext: Checking localStorage on app start:', {
       savedUser: !!savedUser,
       savedAuth,
-      savedUserId,
       currentUrl: window.location.href
     });
 
     if (savedUser && savedAuth === 'true') {
       try {
-        const parsedUser = JSON.parse(savedUser);
+        const parsedUser: User = JSON.parse(savedUser);
         setUser(parsedUser);
         setIsAuthenticated(true);
+
+        // 🔧 ключевой момент: гарантируем userId в localStorage
+        const savedUserId = localStorage.getItem('userId');
+        if (!savedUserId && parsedUser?.id != null) {
+          localStorage.setItem('userId', String(parsedUser.id));
+          console.log('🔧 AuthContext: Fixed missing userId in localStorage:', parsedUser.id);
+        }
+
         console.log('✅ AuthContext: User restored from localStorage:', parsedUser);
       } catch (error) {
         console.error('❌ AuthContext: Failed to parse saved user:', error);
@@ -71,13 +79,21 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
       console.log('ℹ️ AuthContext: No authentication found, showing auth modal');
       setShowAuthModal(true);
     }
+
+    // Завершаем загрузку
+    setIsLoading(false);
   }, []);
 
   const login = (userData: User) => {
     setUser(userData);
     setIsAuthenticated(true);
+
     localStorage.setItem('user', JSON.stringify(userData));
     localStorage.setItem('isAuthenticated', 'true');
+
+    // ✅ добавляем сохранение userId
+    localStorage.setItem('userId', String(userData.id));
+    console.log('✅ AuthContext: User logged in, userId saved:', userData.id);
   };
 
   const logout = () => {
@@ -92,6 +108,7 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
   const value = {
     user,
     isAuthenticated,
+    isLoading,
     login,
     logout,
     showAuthModal,

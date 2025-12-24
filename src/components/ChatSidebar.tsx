@@ -26,30 +26,41 @@ interface ChatSidebarProps {
 
 export function ChatSidebar({ onSelectChat, currentSessionId, refreshTrigger, onChatDeleted }: ChatSidebarProps) {
   const { state } = useSidebar();
-  const { user } = useAuth();
+  const { user, isAuthenticated, isLoading } = useAuth();
   const collapsed = state === "collapsed";
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const loadChatSessions = async () => {
-      if (!user) {
+      // Ждем завершения загрузки аутентификации
+      if (isLoading) {
+        console.log('⏳ ChatSidebar: Waiting for auth to load...');
+        return;
+      }
+
+      // Проверяем аутентификацию
+      if (!isAuthenticated || !user) {
+        console.log('ℹ️ ChatSidebar: User not authenticated, skipping session load');
         setLoading(false);
         return;
       }
 
       try {
+        console.log('📥 ChatSidebar: Loading sessions for user:', user.id);
+        setLoading(true);
         const sessions = await apiClient.getAllSessions();
         setChatSessions(sessions);
+        console.log('✅ ChatSidebar: Loaded sessions:', sessions.length);
       } catch (error) {
-        console.error('Error loading chat sessions:', error);
+        console.error('❌ ChatSidebar: Error loading chat sessions:', error);
       } finally {
         setLoading(false);
       }
     };
 
     loadChatSessions();
-  }, [refreshTrigger]);
+  }, [refreshTrigger, user, isAuthenticated, isLoading]);
 
   const formatDate = (timestamp: number): string => {
     const now = new Date();

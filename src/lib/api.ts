@@ -35,11 +35,18 @@ class ApiClient {
     // Получаем userId из localStorage для аутентификации
     const rawUserId = localStorage.getItem("userId");
 
+    // 🔧 Добавляем валидацию: не делаем запрос без userId
+    if (!rawUserId) {
+      throw new Error("Auth missing: userId is not set in localStorage. Please log in first.");
+    }
+
+    console.log(`🔗 API Request: ${options.method || 'GET'} ${endpoint} with userId: ${rawUserId}`);
+
     const response = await fetch(url, {
       ...options,
       headers: {
         "Content-Type": "application/json",
-        ...(rawUserId ? { "x-user-id": rawUserId } : {}),
+        "x-user-id": rawUserId, // Всегда добавляем заголовок
         ...(options.headers || {}),
       },
     });

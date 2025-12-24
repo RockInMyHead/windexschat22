@@ -19,7 +19,7 @@ const AppContent = () => {
   const navigate = useNavigate();
   const { showAuthModal, setShowAuthModal, login, pendingMessage, setInitialChatMessage, setPendingMessage } = useAuth();
 
-  const handleAuthSuccess = (user: { id: string; name: string; email: string }, initialMessage?: string) => {
+  const handleAuthSuccess = (user: { id: number; name: string; email: string }, initialMessage?: string) => {
     login(user);
     setShowAuthModal(false);
 
