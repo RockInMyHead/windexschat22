@@ -24,6 +24,118 @@ const throttle = <T extends any[]>(func: (...args: T) => void, delay: number) =>
   };
 };
 
+// Execution events types
+type ExecutionEvent =
+  | { type: "step_start"; id: string; label: string }
+  | { type: "step_done"; id: string }
+  | { type: "step_error"; id: string; error: string }
+  | { type: "done"; artifactId: number };
+
+// Execution step type for UI
+type ExecutionStep = {
+  id: string;
+  label: string;
+  status: 'pending' | 'active' | 'completed' | 'error';
+  error?: string;
+};
+
+// Website execution stream function
+async function executeWebsiteStream(
+  prompt: string,
+  sessionId: number,
+  onEvent: (event: ExecutionEvent) => void
+): Promise<{ artifactId: number }> {
+  return new Promise(async (resolve, reject) => {
+    let settled = false; // ✅ добавили
+
+    const safeResolve = (v: { artifactId: number }) => {
+      if (settled) return;
+      settled = true;
+      resolve(v);
+    };
+
+    const safeReject = (e: unknown) => {
+      if (settled) return;
+      settled = true;
+      reject(e);
+    };
+
+    // ⏰ таймер теперь тоже safe
+    const timeout = setTimeout(() => {
+      safeReject(new Error('Website generation timeout (5 minutes)'));
+    }, 5 * 60 * 1000);
+
+    try {
+      const response = await fetch('/api/website/execute', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          prompt,
+          sessionId
+        })
+      });
+
+      if (!response.ok) {
+        clearTimeout(timeout);
+        safeReject(new Error(`HTTP error! status: ${response.status}`));
+        return;
+      }
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+
+      if (!reader) {
+        clearTimeout(timeout);
+        safeReject(new Error('No response body reader'));
+        return;
+      }
+
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmedLine = line.trim();
+          if (!trimmedLine) continue;
+
+          try {
+            const event: ExecutionEvent = JSON.parse(trimmedLine);
+            onEvent(event);
+
+            if (event.type === 'done') {
+              clearTimeout(timeout);
+              safeResolve({ artifactId: (event as any).artifactId });
+              return;
+            }
+
+            if (event.type === 'step_error' || event.type === 'fatal') {
+              clearTimeout(timeout);
+              safeReject(new Error((event as any).error || 'Website generation failed'));
+              return;
+            }
+          } catch (e) {
+            console.warn('Failed to parse execution event:', trimmedLine, e);
+          }
+        }
+      }
+
+      clearTimeout(timeout);
+      safeReject(new Error('Stream ended without completion'));
+    } catch (error) {
+      clearTimeout(timeout);
+      safeReject(error);
+    }
+  });
+}
+
 interface MarketWidgetState {
   quote: MarketQuote;
   chart: MarketChart;
@@ -37,7 +149,8 @@ interface UseChatSendOptions {
   internetEnabled: boolean;
   user?: User;
   onMessageUpdate: (updater: (prev: Message[]) => Message[]) => void;
-  setArtifacts: (updater: (prev: Map<number, Artifact>) => Map<number, Artifact>) => void;
+  onArtifactCreated?: (artifact: Artifact) => void;
+  onArtifactUpdated?: (artifact: Artifact) => void;
   onMarketWidgetUpdate: (widget: MarketWidgetState | null) => void;
   onThinkingUpdate: (messages: string[]) => void;
   onPlanningUpdate: (plan: PlanStep[], currentStep: number, isPlanning: boolean) => void;
@@ -49,6 +162,8 @@ interface UseChatSendOptions {
 interface UseChatSendReturn {
   isLoading: boolean;
   isSending: boolean;
+  executionSteps: ExecutionStep[];
+  isExecutingWebsite: boolean;
   abortController: AbortController | null;
   sendMessage: (messageText: string, messages: Message[]) => Promise<void>;
   abortCurrentRequest: () => void;
@@ -61,6 +176,7 @@ export const useChatSend = ({
   user,
   onMessageUpdate,
   onArtifactCreated,
+  onArtifactUpdated,
   onMarketWidgetUpdate,
   onThinkingUpdate,
   onPlanningUpdate,
@@ -69,6 +185,8 @@ export const useChatSend = ({
   onScrollToBottom,
 }: UseChatSendOptions): UseChatSendReturn => {
   const [isLoading, setIsLoading] = useState(false);
+  const [executionSteps, setExecutionSteps] = useState<ExecutionStep[]>([]);
+  const [isExecutingWebsite, setIsExecutingWebsite] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const isSendingRef = useRef(false);
 
@@ -158,11 +276,6 @@ export const useChatSend = ({
     isSendingRef.current = true;
 
     const userMessage: Message = { role: "user", content: messageText, timestamp: Date.now() };
-    const systemMessage = {
-      role: "system" as const,
-      content: "Ты полезный AI-ассистент. Каждый чат является полностью независимым и изолированным. Не используй информацию или контекст из других разговоров. Отвечай только на основе предоставленных сообщений в текущем чате.",
-      timestamp: Date.now()
-    };
 
     // Ограничиваем контекст до последних 20 сообщений
     const MAX_CONTEXT_MESSAGES = 20;
@@ -180,14 +293,13 @@ export const useChatSend = ({
       return content;
     };
 
-    systemMessage.content = truncateMessage(systemMessage.content);
     userMessage.content = truncateMessage(userMessage.content);
     const processedMessages = recentMessages.map(msg => ({
       ...msg,
       content: truncateMessage(msg.content)
     }));
 
-    const allMessages = [systemMessage, ...processedMessages, userMessage] as any[];
+    const allMessages = [...processedMessages, userMessage] as any[];
 
     // Сохраняем только пользовательское сообщение в состоянии
     onMessageUpdate(prev => [...prev, userMessage]);
@@ -195,6 +307,15 @@ export const useChatSend = ({
 
     // Принудительная прокрутка при начале ответа
     setTimeout(() => throttledScrollToBottom(), 100);
+
+    // Хелпер на поиск последнего артефакта в текущем чате
+    const getLastArtifactId = (msgs: Message[]) => {
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const a = (msgs[i] as any)?.artifactId;
+        if (a) return Number(a);
+      }
+      return null;
+    };
 
     try {
       // Проверяем, хочет ли пользователь создать сайт
@@ -204,24 +325,60 @@ export const useChatSend = ({
       if (isWebsiteRequest) {
         console.log('🎯 WEBSITE REQUEST DETECTED - will generate artifact');
 
+        // ✅ state доступен и onEvent, и catch
+        const execState = { done: false, artifactId: null as number | null };
+
         try {
-          console.log('🔧 Calling generateWebsiteArtifact...');
-          const { artifact, assistantText } = await generateWebsiteArtifact(
+          await apiClient.saveMessage(Number(sessionIdToUse), "user", messageText);
+
+          console.log('🔧 Calling executeWebsiteStream...');
+          setIsExecutingWebsite(true);
+          setExecutionSteps([]);
+
+          const { artifactId } = await executeWebsiteStream(
             messageText,
-            selectedModel
-          );
-          console.log('✅ generateWebsiteArtifact succeeded, artifact title:', artifact.title);
-
-          // Сохраняем артефакт в базу данных
-          const { artifactId } = await apiClient.createArtifact(
             sessionIdToUse,
-            'website',
-            artifact.title,
-            artifact.files,
-            artifact.deps
+            (event) => {
+              // ваш текущий onEvent/update
+              console.log('🎯 Execution event:', event);
+
+              if (event?.type === "done" && typeof (event as any).artifactId === "number") {
+                execState.done = true;
+                execState.artifactId = (event as any).artifactId;
+              }
+
+              setExecutionSteps(prev => {
+                const existingStep = prev.find(s => s.id === event.id);
+                if (existingStep) {
+                  // Обновляем существующий шаг
+                  return prev.map(s =>
+                    s.id === event.id
+                      ? {
+                          ...s,
+                          status: event.type === 'step_start' ? 'active' :
+                                 event.type === 'step_done' ? 'completed' :
+                                 event.type === 'step_error' ? 'error' : s.status,
+                          error: event.type === 'step_error' ? event.error : s.error
+                        }
+                      : s
+                  );
+                } else if (event.type === 'step_start') {
+                  // Добавляем новый шаг
+                  return [...prev, {
+                    id: event.id,
+                    label: event.label,
+                    status: 'active' as const
+                  }];
+                }
+                return prev;
+              });
+            }
           );
 
-          console.log('✅ Artifact created with ID:', artifactId);
+          console.log('✅ Website execution completed, artifactId:', artifactId);
+
+          // Получаем созданный артефакт из БД
+          const artifact = await apiClient.getArtifact(artifactId);
 
           // Создаем полноценный объект Artifact для немедленного отображения
           const createdArtifact: Artifact = {
@@ -243,6 +400,7 @@ export const useChatSend = ({
           }
 
           // Создаем сообщение ассистента с артефактом
+          const assistantText = `Создал сайт "${artifact.title}" с ${Object.keys(artifact.files).length} файлами!`;
           const assistantMessage = {
             role: 'assistant' as const,
             content: assistantText,
@@ -253,18 +411,126 @@ export const useChatSend = ({
           onMessageUpdate(prev => [...prev, assistantMessage]);
 
           // Сохраняем сообщение ассистента с привязкой к артефакту
-          await apiClient.saveMessage(sessionIdToUse, 'assistant', assistantText, artifactId);
+          console.log('🔍 Artifact saveMessage payload:', {
+            sessionId: Number(sessionIdToUse),
+            role: 'assistant',
+            content: assistantText,
+            contentLength: assistantText?.length,
+            contentTrimmed: assistantText?.trim()?.length,
+            artifactId
+          });
+          await apiClient.saveMessage(Number(sessionIdToUse), 'assistant', assistantText, artifactId);
 
           return;
-        } catch (artifactError) {
-          console.error('❌ Failed to generate artifact:', artifactError);
+        } catch (artifactError: any) {
+          console.error("❌ Failed to generate artifact:", artifactError);
+
+          // Специальная обработка 401 ошибки (сессия истекла)
+          if (artifactError?.status === 401 || artifactError?.message?.includes('401')) {
+            const authErrorMessage = "❌ Сессия истекла. Пожалуйста, войдите в систему заново.";
+            onMessageUpdate(prev => [...prev, {
+              role: "assistant",
+              content: authErrorMessage,
+              timestamp: Date.now()
+            }]);
+            return;
+          }
+
+          // ✅ DONE побеждает таймаут/ошибку
+          if (execState.done && execState.artifactId) {
+            const successMessage = `Сайт создан. Artifact ID: ${execState.artifactId}`;
+            onMessageUpdate(prev => [...prev, { role: "assistant", content: successMessage, timestamp: Date.now() }]);
+            await apiClient.saveMessage(Number(sessionIdToUse), "assistant", successMessage);
+            return;
+          }
+
+          // (опционально) late check — если done не поймали, но артефакт создался
+          try {
+            const artifacts = await apiClient.getArtifactsBySession(Number(sessionIdToUse));
+            const last = Array.isArray(artifacts) ? artifacts[artifacts.length - 1] : null;
+            if (last?.id) {
+              const successMessage = `Сайт создан. Artifact ID: ${last.id}`;
+              onMessageUpdate(prev => [...prev, { role: "assistant", content: successMessage, timestamp: Date.now() }]);
+              await apiClient.saveMessage(Number(sessionIdToUse), "assistant", successMessage);
+              return;
+            }
+          } catch {}
+
+          // ❌ только если реально не создалось
           const errorMessage = "Извините, не удалось создать веб-сайт. Попробуйте переформулировать запрос или попробуйте снова.";
-          onMessageUpdate(prev => [...prev, {
-            role: 'assistant',
-            content: errorMessage,
-            timestamp: Date.now()
-          }]);
-          await apiClient.saveMessage(sessionIdToUse, 'assistant', errorMessage);
+          onMessageUpdate(prev => [...prev, { role: "assistant", content: errorMessage, timestamp: Date.now() }]);
+          await apiClient.saveMessage(Number(sessionIdToUse), "assistant", errorMessage);
+          return;
+        } finally {
+          // ✅ ГАРАНТИРОВАННО сбрасываем состояние загрузки, чтобы UI не зависал
+          setIsExecutingWebsite(false);
+        }
+      }
+
+      // Проверяем, является ли это редактированием существующего сайта
+      const lastArtifactId = getLastArtifactId(currentMessages);
+      const isWebsiteEdit = !isWebsiteRequest && Boolean(lastArtifactId);
+
+      if (isWebsiteEdit && lastArtifactId) {
+        console.log("🛠️ WEBSITE EDIT DETECTED", { lastArtifactId });
+
+        try {
+          const sid = Number(sessionIdToUse);
+
+          // ✅ Сохраняем user-message в БД сразу
+          await apiClient.saveMessage(sid, "user", messageText, lastArtifactId);
+
+          // requestId для идемпотентности
+          const editRequestId = crypto.randomUUID();
+
+          // Вызываем endpoint редактирования
+          const { artifact, assistantText } = await apiClient.editWebsiteArtifact(
+            lastArtifactId,
+            messageText,
+            selectedModel,
+            editRequestId
+          );
+
+          // Обновляем артефакт в UI
+          const updatedArtifact: Artifact = {
+            id: lastArtifactId,
+            sessionId: sessionIdToUse,
+            type: "website",
+            title: artifact.title,
+            files: artifact.files,
+            deps: artifact.deps,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          };
+
+          // Сообщаем наверх об обновлении артефакта
+          onArtifactUpdated?.(updatedArtifact);
+
+          // Добавляем сообщение ассистента с artifactId
+          const assistantMessage = {
+            role: "assistant" as const,
+            content: assistantText,
+            timestamp: Date.now(),
+            artifactId: lastArtifactId,
+          };
+
+          onMessageUpdate(prev => [...prev, assistantMessage]);
+
+          // Сохраняем assistant-message в БД с artifactId
+          await apiClient.saveMessage(sid, "assistant", assistantText, lastArtifactId);
+
+          return;
+        } catch (e) {
+          console.error("❌ Website edit failed:", e);
+          const errorMessage =
+            "Извините, не удалось применить правки к сайту. Попробуйте переформулировать запрос или повторите попытку.";
+
+          onMessageUpdate(prev => [
+            ...prev,
+            { role: "assistant", content: errorMessage, timestamp: Date.now() },
+          ]);
+
+          await apiClient.saveMessage(Number(sessionIdToUse), "assistant", errorMessage, lastArtifactId);
           return;
         }
       }
@@ -300,10 +566,12 @@ export const useChatSend = ({
         }
       }
 
-      console.log('About to call sendChatMessage with messages:', allMessages.length, 'selectedModel:', selectedModel);
-      await sendChatMessage(
+      // Генерируем requestId для защиты от двойных списаний
+      const requestId = crypto.randomUUID();
+
+      console.log('About to call sendChatMessage with messages:', allMessages.length, 'requestId:', requestId);
+      const returnedAssistantText = await sendChatMessage(
         allMessages as import("@/lib/openai").Message[],
-        selectedModel,
         (chunk: string) => {
           assistantContent += chunk;
 
@@ -359,22 +627,47 @@ export const useChatSend = ({
           onTokenCost(cost);
         },
         controller.signal,
-        user?.id,
-        sessionIdToUse
+        sessionIdToUse,
+        requestId
       );
+
+      // ✅ финальный текст: сперва return value, затем накопленный стрим, затем пусто
+      const finalAssistantText = String(returnedAssistantText ?? assistantContent ?? "").trim();
 
       // Сохраняем сообщение пользователя в базу данных
       console.log('Saving user message to database...');
-      await apiClient.saveMessage(sessionIdToUse, "user", messageText);
+      const sid = Number(sessionIdToUse);
+      if (!Number.isFinite(sid) || sid <= 0) {
+        throw new Error(`Invalid sessionIdToUse: ${sessionIdToUse}`);
+      }
+      await apiClient.saveMessage(sid, "user", messageText);
 
       // Если это первое сообщение пользователя в чате, генерируем заголовок
       if (currentMessages.length === 0 && sessionIdToUse) {
         await generateChatTitle(messageText, sessionIdToUse);
       }
 
-      // Сохраняем сообщение ассистента в базу данных
+      // ✅ сохраняем ассистента только если есть контент
       console.log('Saving assistant message to database...');
-      await apiClient.saveMessage(sessionIdToUse, "assistant", assistantContent);
+      console.log("assistant save payload:", {
+        sessionIdToUse,
+        sid,
+        typeofReturned: typeof returnedAssistantText,
+        returnedLen: typeof returnedAssistantText === "string" ? returnedAssistantText.length : null,
+        assistantContentLen: assistantContent?.length ?? null,
+        finalLen: finalAssistantText.length,
+        finalAssistantText,
+      });
+      if (finalAssistantText.length > 0) {
+        await apiClient.saveMessage(sid, "assistant", finalAssistantText);
+
+        // ✅ Очищаем состояния планирования и thinking messages после успешного ответа
+        onThinkingUpdate([]);
+        onPlanningUpdate([], -1, false);
+        onSearchProgress([]);
+      } else {
+        console.warn("⚠️ Assistant reply is empty — skipping saveMessage(assistant)");
+      }
 
     } catch (error: any) {
       console.error('Error in sendMessage:', error);
@@ -385,18 +678,38 @@ export const useChatSend = ({
         return;
       }
 
+      // ✅ Фильтруем ReferenceError — не показываем в чате
+      if (error.name === 'ReferenceError' || error.message?.includes("Can't find variable")) {
+        console.error('ReferenceError suppressed in UI:', error);
+        return;
+      }
+
       // Показываем ошибку пользователю
-      const errorMessage = error.message || 'Произошла ошибка при отправке сообщения';
+      const errorMessage = (error.message || 'Произошла ошибка при отправке сообщения').trim();
+      const fullErrorMessage = `❌ ${errorMessage}`;
       onMessageUpdate(prev => [...prev, {
         role: 'assistant',
-        content: `❌ ${errorMessage}`,
+        content: fullErrorMessage,
         timestamp: Date.now()
       }]);
 
+      // ✅ Очищаем состояния планирования при ошибке
+      onThinkingUpdate([]);
+      onPlanningUpdate([], -1, false);
+      onSearchProgress([]);
+
       // Сохраняем сообщение об ошибке
-      if (sessionIdToUse) {
+      if (sessionIdToUse && fullErrorMessage.trim()) {
+        const errorSid = Number(sessionIdToUse);
+        console.log('🔍 Error saveMessage payload:', {
+          sessionId: errorSid,
+          role: 'assistant',
+          content: fullErrorMessage,
+          contentLength: fullErrorMessage?.length,
+          contentTrimmed: fullErrorMessage?.trim()?.length
+        });
         try {
-          await apiClient.saveMessage(sessionIdToUse, 'assistant', `❌ ${errorMessage}`);
+          await apiClient.saveMessage(errorSid, 'assistant', fullErrorMessage);
         } catch (saveError) {
           console.error('Failed to save error message:', saveError);
         }
@@ -413,6 +726,7 @@ export const useChatSend = ({
     isLoading,
     onMessageUpdate,
     onArtifactCreated,
+    onArtifactUpdated,
     onMarketWidgetUpdate,
     onThinkingUpdate,
     onPlanningUpdate,
@@ -434,6 +748,8 @@ export const useChatSend = ({
   return {
     isLoading,
     isSending: isSendingRef.current,
+    executionSteps,
+    isExecutingWebsite,
     abortController: abortControllerRef.current,
     sendMessage,
     abortCurrentRequest,

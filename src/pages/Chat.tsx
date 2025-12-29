@@ -9,6 +9,7 @@ import { ChatSidebar } from "@/components/ChatSidebar";
 import { TokenCostDisplay } from "@/components/TokenCostDisplay";
 import { BtcWidget } from "@/components/BtcWidget";
 import { WebsiteArtifactCard } from "@/components/WebsiteArtifactCard";
+import { WebsiteExecutionProgress } from "@/components/WebsiteExecutionProgress";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import {
   Select,
@@ -43,8 +44,6 @@ const Chat = () => {
   const navigate = useNavigate();
   const { user, isLoading, initialChatMessage, setInitialChatMessage, setShowAuthModal } = useAuth();
 
-  // Курс USD -> RUB (примерный курс на 2025 год)
-  const USD_TO_RUB_RATE = 85;
 
   // Состояния
   const [messages, setMessages] = useState<Message[]>([]);
@@ -83,6 +82,13 @@ const Chat = () => {
     user,
     onMessageUpdate: setMessages,
     onArtifactCreated: (artifact) => {
+      artifacts.setArtifacts(prev => {
+        const next = new Map(prev);
+        next.set(artifact.id!, artifact);
+        return next;
+      });
+    },
+    onArtifactUpdated: (artifact) => {
       artifacts.setArtifacts(prev => {
         const next = new Map(prev);
         next.set(artifact.id!, artifact);
@@ -186,7 +192,10 @@ const Chat = () => {
       // Проверяем, есть ли initialMessage
       const initialMessage = initialChatMessage || location.state?.initialMessage;
 
-      if (!chatSession.sessionId || initialMessage) {
+      // Проверяем, не была ли уже обработана эта initialMessage
+      const hasProcessedInitialMessage = sessionStorage.getItem('processedInitialMessage') === (initialMessage || 'none');
+
+      if (!chatSession.sessionId || (initialMessage && !hasProcessedInitialMessage)) {
         try {
           // Если есть initialMessage, всегда создаем новый чат
           if (initialMessage) {
@@ -200,6 +209,8 @@ const Chat = () => {
               await chatSend.sendMessage(initialMessage, messages);
               // Очищаем initialMessage после использования
               setInitialChatMessage(null);
+              // Помечаем сообщение как обработанное
+              sessionStorage.setItem('processedInitialMessage', initialMessage);
               // Также очищаем location.state если он был использован
               if (window.history.replaceState) {
                 window.history.replaceState({}, document.title, window.location.pathname);
@@ -230,9 +241,12 @@ const Chat = () => {
       }
     };
 
-    initializeSession();
+    // Вызываем инициализацию только при первом рендере или при изменении пользователя
+    if (!isLoading && user) {
+      initializeSession();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoading, chatSession.sessionId, initialChatMessage, location.state?.initialMessage]);
+  }, [user, isLoading]);
 
 
   // Очистка ресурсов при размонтировании
@@ -413,7 +427,6 @@ const Chat = () => {
             onToggleInternet={handleToggleInternet}
             userBalance={balance.balance}
             balanceLoading={balance.isLoading}
-            usdToRubRate={USD_TO_RUB_RATE}
           />
 
           <div className="flex-1 w-full overflow-y-auto overflow-x-hidden min-h-0">
@@ -489,6 +502,12 @@ const Chat = () => {
                   </div>
                 </div>
               ))}
+
+              {/* Website execution progress */}
+              <WebsiteExecutionProgress
+                steps={chatSend.executionSteps}
+                isVisible={chatSend.isExecutingWebsite}
+              />
 
               {/* Response plan */}
               {isPlanning && responsePlan.length > 0 && (
@@ -592,6 +611,10 @@ const Chat = () => {
 
                 <Button
                   type="button"
+                  onClick={input.trim() ? (e) => {
+                    e.preventDefault();
+                    handleSubmit(e as any);
+                  } : undefined}
                   onMouseDown={input.trim() ? undefined : (e) => {
                     e.preventDefault();
                     voiceInput.toggleRecording();

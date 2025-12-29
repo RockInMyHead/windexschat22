@@ -50,13 +50,9 @@ export function WalletDashboard({ embedded = false, userId: propUserId }: Wallet
 
   console.log('💰 WalletDashboard: Using userId:', userId, 'propUserId:', propUserId);
 
-  // Курс USD -> RUB
-  const USD_TO_RUB_RATE = 85;
-
   // Функция форматирования суммы в рублях
   const formatAmount = (amount: number) => {
-    const rubAmount = amount * USD_TO_RUB_RATE;
-    return `${rubAmount.toFixed(2)} ₽`;
+    return `${amount.toFixed(2)} ₽`;
   };
 
   useEffect(() => {
@@ -235,35 +231,6 @@ export function WalletDashboard({ embedded = false, userId: propUserId }: Wallet
         </Card>
       </div>
 
-      {/* Детальная статистика API */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Статистика использования API</CardTitle>
-          <CardDescription>
-            Детальная информация о потреблении токенов
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div className="text-center">
-              <div className="text-lg font-semibold text-blue-600">{apiUsage.totalInputTokens.toLocaleString()}</div>
-              <div className="text-sm text-gray-500">Входных токенов</div>
-            </div>
-            <div className="text-center">
-              <div className="text-lg font-semibold text-green-600">{apiUsage.totalOutputTokens.toLocaleString()}</div>
-              <div className="text-sm text-gray-500">Выходных токенов</div>
-            </div>
-            <div className="text-center">
-              <div className="text-lg font-semibold text-purple-600">{formatAmount(apiUsage.totalCost)}</div>
-              <div className="text-sm text-gray-500">Общая стоимость</div>
-            </div>
-            <div className="text-center">
-              <div className="text-lg font-semibold text-orange-600">1 ₽</div>
-              <div className="text-sm text-gray-500">Стоимость сообщения</div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
 
       {/* История транзакций */}
       <Card>

@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { apiClient } from '@/lib/api';
 
 interface User {
   id: number;
@@ -43,66 +44,41 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
   const [initialChatMessage, setInitialChatMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    // Проверяем, есть ли сохраненная аутентификация при загрузке
-    const savedUser = localStorage.getItem('user');
-    const savedAuth = localStorage.getItem('isAuthenticated');
-
-    console.log('🔍 AuthContext: Checking localStorage on app start:', {
-      savedUser: !!savedUser,
-      savedAuth,
-      currentUrl: window.location.href
-    });
-
-    if (savedUser && savedAuth === 'true') {
+    const boot = async () => {
       try {
-        const parsedUser: User = JSON.parse(savedUser);
-        setUser(parsedUser);
+        const me = await apiClient.me();
+        setUser(me);
         setIsAuthenticated(true);
-
-        // 🔧 ключевой момент: гарантируем userId в localStorage
-        const savedUserId = localStorage.getItem('userId');
-        if (!savedUserId && parsedUser?.id != null) {
-          localStorage.setItem('userId', String(parsedUser.id));
-          console.log('🔧 AuthContext: Fixed missing userId in localStorage:', parsedUser.id);
-        }
-
-        console.log('✅ AuthContext: User restored from localStorage:', parsedUser);
-      } catch (error) {
-        console.error('❌ AuthContext: Failed to parse saved user:', error);
-        // Очищаем поврежденные данные
-        localStorage.removeItem('user');
-        localStorage.removeItem('isAuthenticated');
-        localStorage.removeItem('userId');
+        setShowAuthModal(false);
+        console.log('✅ AuthContext: User restored from session:', me);
+      } catch {
+        setUser(null);
+        setIsAuthenticated(false);
         setShowAuthModal(true);
+        console.log('ℹ️ AuthContext: No authentication found, showing auth modal');
+      } finally {
+        setIsLoading(false);
       }
-    } else {
-      console.log('ℹ️ AuthContext: No authentication found, showing auth modal');
-      setShowAuthModal(true);
-    }
-
-    // Завершаем загрузку
-    setIsLoading(false);
+    };
+    boot();
   }, []);
 
   const login = (userData: User) => {
     setUser(userData);
     setIsAuthenticated(true);
-
-    localStorage.setItem('user', JSON.stringify(userData));
-    localStorage.setItem('isAuthenticated', 'true');
-
-    // ✅ добавляем сохранение userId
-    localStorage.setItem('userId', String(userData.id));
-    console.log('✅ AuthContext: User logged in, userId saved:', userData.id);
+    console.log('✅ AuthContext: User logged in:', userData.id);
   };
 
-  const logout = () => {
-    setUser(null);
-    setIsAuthenticated(false);
-    localStorage.removeItem('user');
-    localStorage.removeItem('isAuthenticated');
-    localStorage.removeItem('userId');
-    console.log('👋 AuthContext: User logged out');
+  const logout = async () => {
+    try {
+      await apiClient.logout();
+    } catch (error) {
+      console.error('❌ AuthContext: Logout error:', error);
+    } finally {
+      setUser(null);
+      setIsAuthenticated(false);
+      console.log('👋 AuthContext: User logged out');
+    }
   };
 
   const value = {

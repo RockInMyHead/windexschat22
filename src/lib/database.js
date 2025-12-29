@@ -135,6 +135,9 @@ const createTables = () => {
     CREATE INDEX IF NOT EXISTS idx_transactions_created_at ON transactions (created_at);
     CREATE INDEX IF NOT EXISTS idx_api_usage_user_id ON api_usage (user_id);
     CREATE INDEX IF NOT EXISTS idx_api_usage_created_at ON api_usage (created_at);
+
+    -- ИДЕМПОТЕНТНОСТЬ СПИСАНИЯ: один reference_id = одна транзакция
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_transactions_reference_id ON transactions (reference_id);
   `);
 };
 
@@ -219,7 +222,7 @@ const getArtifactsBySessionStmt = db.prepare(`
 
 // Пользователи и кошелек
 const insertUserStmt = db.prepare(`
-  INSERT OR IGNORE INTO users (username, email, balance, created_at, updated_at)
+  INSERT INTO users (username, email, balance, created_at, updated_at)
   VALUES (?, ?, ?, ?, ?)
 `);
 
@@ -239,6 +242,27 @@ const updateUserBalanceStmt = db.prepare(`
   UPDATE users
   SET balance = balance + ?, updated_at = ?
   WHERE id = ?
+`);
+
+// Баланс / списание фиксированной комиссии
+const getUserBalanceStmt = db.prepare(`
+  SELECT balance
+  FROM users
+  WHERE id = ?
+`);
+
+const findTransactionByRefStmt = db.prepare(`
+  SELECT id
+  FROM transactions
+  WHERE reference_id = ?
+  LIMIT 1
+`);
+
+const deductFixedFeeIfEnoughStmt = db.prepare(`
+  UPDATE users
+     SET balance = balance - ?, updated_at = ?
+   WHERE id = ?
+     AND balance >= ?
 `);
 
 // Транзакции
@@ -401,14 +425,33 @@ export class DatabaseService {
       }
 
       const now = Date.now();
-      const result = insertUserStmt.run(username, email, initialBalance, now, now);
-      console.log('🗄️ createUser result:', { changes: result.changes, lastInsertRowid: result.lastInsertRowid });
+      let finalUsername = username;
+      let counter = 0;
 
-      if (result.changes > 0) {
-        return result.lastInsertRowid;
-      } else {
-        console.error('❌ createUser: no changes made');
-        return 0;
+      // Пробуем создать пользователя, генерируя уникальный username при конфликте
+      while (true) {
+        try {
+          const result = insertUserStmt.run(finalUsername, email, initialBalance, now, now);
+          console.log('🗄️ createUser result:', { changes: result.changes, lastInsertRowid: result.lastInsertRowid });
+
+          if (result.changes > 0) {
+            return result.lastInsertRowid;
+          } else {
+            console.error('❌ createUser: no changes made');
+            return 0;
+          }
+        } catch (insertError) {
+          // Если ошибка связана с уникальным ограничением username
+          if (insertError.message && insertError.message.includes('UNIQUE constraint failed')) {
+            counter++;
+            finalUsername = `${username}_${counter}`;
+            console.log(`🔄 Username conflict, trying: ${finalUsername}`);
+          } else {
+            // Другая ошибка, не связанная с username
+            console.error('❌ createUser error:', insertError);
+            return 0;
+          }
+        }
       }
     } catch (error) {
       console.error('❌ createUser error:', error);
@@ -445,6 +488,47 @@ export class DatabaseService {
   static updateUserBalance(userId, amount) {
     const now = Date.now();
     updateUserBalanceStmt.run(amount, now, userId);
+  }
+
+  static getUserBalance(userId) {
+    return getUserBalanceStmt.get(userId)?.balance ?? 0.0;
+  }
+
+  // Списание 1 рубля за успешный ответ (идемпотентно по referenceId)
+  static chargeChatFee1Rub(userId, referenceId, description = "Chat response fee (1 RUB)") {
+    const FEE = 1.0;
+
+    const tx = db.transaction(() => {
+      const now = Date.now();
+
+      // 1) Идемпотентность: если уже списали по этому referenceId — не списываем повторно
+      if (referenceId) {
+        const exists = findTransactionByRefStmt.get(referenceId);
+        if (exists) {
+          return { ok: true, charged: false, reason: "already_charged", balance: this.getUserBalance(userId) };
+        }
+      }
+
+      // 2) Атомарно списываем только если balance >= 1
+      const r = deductFixedFeeIfEnoughStmt.run(FEE, now, userId, FEE);
+      if (r.changes === 0) {
+        return { ok: false, charged: false, reason: "insufficient_funds", balance: this.getUserBalance(userId) };
+      }
+
+      // 3) Пишем транзакцию аудита
+      insertTransactionStmt.run(
+        userId,
+        "spend",
+        -FEE,
+        description,
+        referenceId || null,
+        now
+      );
+
+      return { ok: true, charged: true, balance: this.getUserBalance(userId) };
+    });
+
+    return tx();
   }
 
   // Работа с транзакциями

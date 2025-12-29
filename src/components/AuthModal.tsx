@@ -55,15 +55,6 @@ export const AuthModal = ({ isOpen, onClose, onAuthSuccess, initialMessage }: Au
         const user = await response.json();
         console.log('✅ AuthModal: User authenticated:', user);
 
-        // Сохраняем реального пользователя в localStorage
-        localStorage.setItem("user", JSON.stringify({
-          id: user.id,
-          name: user.username,
-          email: user.email
-        }));
-        localStorage.setItem("userId", String(user.id));
-        localStorage.setItem("isAuthenticated", "true");
-
         onAuthSuccess({
           id: user.id,
           name: user.username,
@@ -129,15 +120,6 @@ export const AuthModal = ({ isOpen, onClose, onAuthSuccess, initialMessage }: Au
       if (response.ok) {
         const user = await response.json();
         console.log('✅ AuthModal: User registered:', user);
-
-        // Сохраняем реального пользователя в localStorage
-        localStorage.setItem("user", JSON.stringify({
-          id: user.id,
-          name: user.username,
-          email: user.email
-        }));
-        localStorage.setItem("userId", String(user.id));
-        localStorage.setItem("isAuthenticated", "true");
 
         onAuthSuccess({
           id: user.id,

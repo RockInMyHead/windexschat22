@@ -1,5 +1,6 @@
 // Use relative path for API - works on any domain
 export const API_BASE_URL = '/api';
+export const TTS_BASE_URL = 'http://localhost:8000';
 
 export interface Message {
   id?: number;
@@ -32,27 +33,20 @@ class ApiClient {
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const url = `${API_BASE_URL}${endpoint}`;
 
-    // Получаем userId из localStorage для аутентификации
-    const rawUserId = localStorage.getItem("userId");
-
-    // 🔧 Добавляем валидацию: не делаем запрос без userId
-    if (!rawUserId) {
-      throw new Error("Auth missing: userId is not set in localStorage. Please log in first.");
-    }
-
-    console.log(`🔗 API Request: ${options.method || 'GET'} ${endpoint} with userId: ${rawUserId}`);
+    console.log(`🔗 API Request: ${options.method || 'GET'} ${endpoint}`);
 
     const response = await fetch(url, {
       ...options,
+      credentials: "include", // Включаем cookies для сессий
       headers: {
-        "Content-Type": "application/json",
-        "x-user-id": rawUserId, // Всегда добавляем заголовок
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
         ...(options.headers || {}),
       },
     });
 
     if (!response.ok) {
-      throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+      const text = await response.text().catch(() => "");
+      throw new Error(`API request failed: ${response.status} ${text || response.statusText}`);
     }
 
     return response.json();
@@ -77,10 +71,22 @@ class ApiClient {
   }
 
   // Сохранить сообщение
-  async saveMessage(sessionId: number, role: 'user' | 'assistant', content: string, artifactId?: number): Promise<{ messageId: number }> {
+  async saveMessage(sessionId: number, role: 'user' | 'assistant', content: string, artifactId?: number | null): Promise<{ messageId: number }> {
+    const sid = Number(sessionId);
+    // локальная валидация — не посылаем мусор на сервер
+    if (!Number.isFinite(sid) || sid <= 0) throw new Error("Invalid sessionId in saveMessage");
+    if (!role) throw new Error("Missing role in saveMessage");
+    if (!content || !content.trim()) throw new Error("Missing content in saveMessage");
+
     return this.request('/messages', {
       method: 'POST',
-      body: JSON.stringify({ sessionId, role, content, artifactId }),
+      headers: { 'Content-Type': 'application/json' }, // ✅ принудительно
+      body: JSON.stringify({
+        sessionId: sid,                               // ✅ имя ключа как на сервере
+        role,
+        content,
+        artifactId: artifactId ?? null,
+      }),
     });
   }
 
@@ -115,6 +121,16 @@ class ApiClient {
       method: 'POST',
       body: data ? JSON.stringify(data) : undefined,
     });
+  }
+
+  // Получить информацию о текущем пользователе
+  me() {
+    return this.request("/me");
+  }
+
+  // Выйти из системы
+  logout() {
+    return this.request("/logout", { method: "POST" });
   }
 
   // === Artifacts API ===
@@ -156,6 +172,95 @@ class ApiClient {
   async getArtifactsBySession(sessionId: number): Promise<Artifact[]> {
     return this.request(`/sessions/${sessionId}/artifacts`);
   }
+
+  // === АРТЕФАКТЫ: РЕДАКТИРОВАНИЕ САЙТА ===
+
+  async editWebsiteArtifact(
+    artifactId: number,
+    instruction: string,
+    model: string,
+    requestId: string
+  ): Promise<{ artifact: { title: string; files: Record<string, string>; deps?: Record<string, string> }; assistantText: string }> {
+    return this.request(`/artifacts/${artifactId}/edit`, {
+      method: "POST",
+      body: JSON.stringify({
+        instruction,
+        model,
+        requestId,
+        requestType: "website_generation",
+        max_tokens: 4000, // PATCH ответы могут быть длинными при сложных изменениях
+        temperature: 0.2,
+        // Для редактирования response_format передается только если нужен
+      }),
+    });
+  }
+
+  // === TTS API ===
+
+}
+
+// TTS API Client
+class TTSClient {
+  private async request(endpoint: string, options: RequestInit = {}): Promise<any> {
+    const url = `${TTS_BASE_URL}${endpoint}`;
+
+    console.log(`🔗 TTS Request: ${options.method || 'GET'} ${url}`);
+
+    const response = await fetch(url, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...options.headers,
+      },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`TTS API error: ${response.status} ${errorText}`);
+    }
+
+    return response.json();
+  }
+
+  async generateTTS(text: string, options: {
+    model?: string;
+    voice?: string;
+    emotion?: string;
+    language?: string;
+  } = {}): Promise<{ file_url: string; duration?: number }> {
+    return this.request('/tts', {
+      method: 'POST',
+      body: JSON.stringify({
+        text,
+        ...options
+      }),
+    });
+  }
+
+  async generateTTSRu(text: string, options: {
+    model?: string;
+    voice?: string;
+    emotion?: string;
+  } = {}): Promise<{ file_url: string; duration?: number }> {
+    return this.generateTTS(text, {
+      model: 'silero_ru',
+      language: 'ru',
+      ...options
+    });
+  }
+
+  async generateTTSEn(text: string, options: {
+    model?: string;
+    voice?: string;
+    emotion?: string;
+  } = {}): Promise<{ file_url: string; duration?: number }> {
+    return this.generateTTS(text, {
+      model: 'silero_en',
+      language: 'en',
+      ...options
+    });
+  }
 }
 
 export const apiClient = new ApiClient();
+export const ttsClient = new TTSClient();

@@ -13,23 +13,42 @@ export interface TokenCost {
   model: string;
 }
 
-// Стоимость токенов за 1M токенов в долларах (DeepSeek models)
+// Стоимость токенов за 1M токенов в долларах
+// Единая модель проекта (1 источник правды)
+const MODEL = "deepseek-chat";
+
+// Параметры для разных типов запросов
+const MODEL_PARAMS = {
+  max_tokens: 12000,
+  temperature: 0.7,
+};
+
+const PLAN_PARAMS = {
+  max_tokens: 1200,
+  temperature: 0.2,
+};
+
+const ARTIFACT_PARAMS = {
+  max_tokens: 4000,
+  temperature: 0.2,
+};
+
 const TOKEN_PRICES = {
+  // DeepSeek models only
   'deepseek-chat': { input: 0.07, output: 1.10 },
   'deepseek-reasoner': { input: 0.55, output: 2.19 },
 };
 
 // Функция расчета стоимости токенов (1 рубль за сообщение)
-export const calculateTokenCost = (usage: any, model: string): TokenCost => {
-  const actualModel = getActualModel(model);
+export const calculateTokenCost = (usage: any): TokenCost => {
+  const actualModel = MODEL;
 
   const inputTokens = usage?.prompt_tokens || 0;
   const outputTokens = usage?.completion_tokens || 0;
   const totalTokens = usage?.total_tokens || (inputTokens + outputTokens);
 
   // Фиксированная стоимость: 1 рубль за сообщение
-  // Конвертируем в USD (курс 85 рублей за доллар)
-  const totalCost = 1 / 85; // 1 рубль = 1/85 USD
+  const totalCost = 1.0; // 1 рубль
   const inputCost = totalCost * 0.3; // Примерное распределение (30% на input)
   const outputCost = totalCost * 0.7; // 70% на output
 
@@ -527,7 +546,13 @@ const requiresWebSearch = (query: string): boolean => {
   }
 
   // =========== КЛЮЧЕВЫЕ СЛОВА, ТРЕБУЮЩИЕ ВЕСА ПОИСКА ===========
-  
+
+  // 0. ВОПРОСЫ ОПРЕДЕЛЕНИЙ И ТЕРМИНОВ (всегда требуют поиска для точности)
+  if (/(что такое|определение|что значит|что означае|значение слова|термин)/i.test(lowerQuery)) {
+    console.log('🔍 requiresWebSearch: TRUE for definition/term query');
+    return true;
+  }
+
   // 1. АКТУАЛЬНОСТЬ И ВРЕМЯ (требуют свежей информации)
   if (/(сейчас|сегодня|вчера|завтра|текущ|последн|новый|современн|актуальн|свеж|недавн|сегодняшн|новост|событи|происшествие)/i.test(lowerQuery)) {
     console.log('🔍 requiresWebSearch: TRUE for time/actual query');
@@ -655,152 +680,53 @@ export interface PlanStep {
 const handleAdvancedModelLogic = async (
   messages: Message[],
   userMessage: Message,
-  selectedModel: string,
   abortSignal?: AbortSignal,
   onChunk?: (chunk: string) => void,
   onPlanGenerated?: (plan: PlanStep[]) => void,
   onStepStart?: (stepIndex: number, step: PlanStep) => void,
   onSearchProgress?: (queries: string[]) => void,
   internetEnabled?: boolean,
-  userId?: number,
-  sessionId?: number
+  sessionId?: number,
+  requestId?: string
 ): Promise<string> => {
-  const actualModel = getActualModel(selectedModel);
+  const actualModel = MODEL;
   // ✅ FIX: modelParams объявляем ДО любых ветвлений
-  const modelParams = getModelParams(selectedModel);
-  console.log(`🎯 Advanced Logic Start | Selected: ${selectedModel} → DeepSeek: ${actualModel} | Internet: ${internetEnabled} | Query: "${userMessage.content.substring(0, 100)}..." (${userMessage.content.length} chars)`);
+  const modelParams = MODEL_PARAMS;
+  console.log(`🎯 Advanced Logic Start | Model: ${actualModel} | Internet: ${internetEnabled} | Query: "${userMessage.content.substring(0, 100)}..." (${userMessage.content.length} chars)`);
 
-  // ПРОВЕРКА НА ПРОСТЫЕ ЗАПРОСЫ - они не должны проходить через планирование
+  // ПРОВЕРКА НА ПРИВЕТСТВИЯ - только они обрабатываются локально
   const lowerQuery = userMessage.content.toLowerCase().trim();
   const originalQuery = userMessage.content.trim();
   
-  // Список простых приветствий и фраз
-  const isVerySimpleQuery = ['привет', 'hi', 'hello', 'здравствуй', 'здравствуйте', 'спасибо', 'благодарю', 'пока', 'до свидания', 'прощай', 'да', 'нет', 'ага', 'угу', 'хорошо', 'плохо', 'нормально', 'ок', 'окей', 'ладно', 'понятно', 'ясно', 'понял'].some(simple =>
-    lowerQuery === simple ||
-    lowerQuery.startsWith(simple + ' ') ||
-    lowerQuery.endsWith(' ' + simple) ||
-    lowerQuery.includes(' ' + simple + ' ')
-  );
-  
-  // Проверка на математические выражения (очень короткие, только цифры и операторы)
-  const isMathExpression = /^[\d\s\+\-\*\/\(\)\.\,]+$/.test(originalQuery) && originalQuery.length < 50;
-  
-  // Очень короткие запросы (меньше 3 символов)
-  const isTooShort = lowerQuery.length < 3;
-  
-  // Только эмодзи
-  const isOnlyEmojis = /^[\p{Emoji}\s]+$/u.test(lowerQuery);
-  
-  // Простые вопросы из одного-двух слов (не требуют планирования)
-  const isSimpleOneWordQuestion = lowerQuery.split(/\s+/).length <= 2 && lowerQuery.length < 20;
+  // ✅ ЛОКАЛЬНО ТОЛЬКО ПРИВЕТСТВИЯ (точный whitelist)
+  const greetings = new Set([
+    "привет",
+    "здравствуй",
+    "здравствуйте",
+    "добрый день",
+    "доброе утро",
+    "добрый вечер",
+    "hi",
+    "hello",
+  ]);
 
-  if (isVerySimpleQuery || isTooShort || isOnlyEmojis || isMathExpression || isSimpleOneWordQuestion) {
-    const reasons = [];
-    if (isVerySimpleQuery) reasons.push('very-simple');
-    if (isMathExpression) reasons.push('math-expression');
-    if (isTooShort) reasons.push('too-short');
-    if (isOnlyEmojis) reasons.push('only-emojis');
-    if (isSimpleOneWordQuestion) reasons.push('one-word');
-    console.log(`🎯 Simple Query Detected | Query: "${originalQuery}" | Reasons: ${reasons.join(', ')} | Returning direct response`);
-    
-    // Для математических выражений используем обычный режим без простого ответа
-    if (isMathExpression) {
-      console.log(`📐 Math Expression | Query: "${originalQuery}" | Using standard model without planning`);
-      // Используем стандартную модель без планирования
-      const actualModel = getActualModel(selectedModel);
-      
-      const requestOptions: RequestInit = {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          messages: messages,
-          model: actualModel,
-          stream: true,
-          ...modelParams,
-          userId: userId,
-          sessionId: sessionId,
-        }),
-      };
+  // нормализация: убираем повторные пробелы и пунктуацию по краям
+  const normalized = lowerQuery.replace(/\s+/g, " ").replace(/^[\s\p{P}]+|[\s\p{P}]+$/gu, "");
 
-      const isAbortSignal = (v: unknown): v is AbortSignal =>
-        !!v &&
-        typeof v === "object" &&
-        typeof (v as any).aborted === "boolean" &&
-        typeof (v as any).addEventListener === "function";
+  const isGreetingOnly = greetings.has(normalized);
 
-      if (isAbortSignal(abortSignal)) {
-        requestOptions.signal = abortSignal;
-      } else if (abortSignal != null) {
-        console.warn("⚠️ Invalid abortSignal in math expression (ignored):", abortSignal);
-      }
-
-      const response = await fetch(`${API_BASE_URL}/chat`, requestOptions);
-
-      if (!response.ok) {
-        throw new Error(`API request failed: ${response.status}`);
-      }
-
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error('Failed to get response reader');
-      }
-
-      const decoder = new TextDecoder();
-      let fullResponse = '';
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6);
-            if (data === '[DONE]') continue;
-
-            try {
-              const parsed = JSON.parse(data);
-              const content = parsed.choices?.[0]?.delta?.content;
-              if (content) {
-                fullResponse += content;
-                if (onChunk) {
-                  onChunk(content);
-                }
-              }
-            } catch (e) {
-              // Ignore parse errors
-            }
-          }
-        }
-      }
-
-      return fullResponse;
-    }
-    
-    const simpleResponse = await getSimpleResponse(userMessage.content);
-    
-    // Имитируем потоковую передачу
-    if (onChunk) {
-      for (const char of simpleResponse) {
-        onChunk(char);
-        await new Promise(resolve => setTimeout(resolve, 5));
-      }
-    }
-
-    return simpleResponse;
+  if (isGreetingOnly) {
+    const local = "Привет! Чем помочь?";
+    console.log(`🎯 Greeting Detected | Query: "${originalQuery}" | Returning local response`);
+    onChunk?.(local);          // ✅ важно: заполнить assistantContent в UI-пайплайне
+    return local;              // ✅ и вернуть значение для non-stream пайплайна
   }
 
   // ШАГ 1: Генерируем план выполнения задачи
-  console.log(`📋 Step 1: Plan Generation | Query: "${userMessage.content}" (${userMessage.content.length} chars) | Model: ${selectedModel}`);
+  console.log(`📋 Step 1: Plan Generation | Query: "${userMessage.content}" (${userMessage.content.length} chars) | Model: ${MODEL}`);
   let plan: PlanStep[] = [];
   try {
-    plan = await generateResponsePlan(userMessage.content, selectedModel, abortSignal);
+    plan = await generateResponsePlan(userMessage.content, internetEnabled, abortSignal);
     const totalQueries = plan.reduce((sum, step) => sum + (step.searchQueries?.length || 0), 0);
     console.log(`✅ Plan Generated | Steps: ${plan.length} | Total search queries: ${totalQueries}`);
 
@@ -836,10 +762,25 @@ const handleAdvancedModelLogic = async (
     plan = [];
   }
 
-  // ШАГ 2: Выполняем поиск в интернете если план требует этого
+  // Если интернет включен но план пустой — инъектируем fallback поиск
+  if (internetEnabled === true && plan.length === 0) {
+    plan = [{
+      step: "Интернет-поиск по запросу пользователя",
+      description: "Получить актуальные данные из интернета по исходному запросу",
+      searchQueries: [{
+        query: originalQuery,
+        purpose: "Актуальные данные (прямой запрос пользователя)"
+      }]
+    } as any];
+    console.log("🟦 Internet enabled + empty plan → injected fallback search query:", originalQuery);
+  }
+
+  // ШАГ 2: Выполняем поиск в интернете если план требует этого ИЛИ пользователь включил интернет
   let searchResults = '';
   const planHasQueries = plan.some(step => step.searchQueries && step.searchQueries.length > 0);
-  if (planHasQueries && internetEnabled !== false) {
+  const mustSearch = planHasQueries || internetEnabled === true;
+
+  if (mustSearch) {
     // Собираем все поисковые запросы
     const allSearchQueries = plan.flatMap(step =>
       step.searchQueries ? step.searchQueries.map(sq => ({ query: sq.query, purpose: sq.purpose })) : []
@@ -882,14 +823,14 @@ const handleAdvancedModelLogic = async (
         });
 
         // Ограничиваем размер результатов поиска
-        const maxSearchLength = selectedModel === 'pro' ? 15000 : 8000;
+        const maxSearchLength = 12000;
         const originalLength = searchContext.length;
         searchResults = searchContext.length > maxSearchLength
           ? searchContext.substring(0, maxSearchLength) + '\n\n[Результаты поиска сокращены для эффективности]'
           : searchContext;
         
         if (originalLength > maxSearchLength) {
-          console.log(`📏 Search Results Truncated | Original: ${originalLength} chars → ${maxSearchLength} chars (limit for ${selectedModel})`);
+          console.log(`📏 Search Results Truncated | Original: ${originalLength} chars → ${maxSearchLength} chars`);
         }
       }
 
@@ -960,6 +901,32 @@ ${plan.map((step, idx) => `${idx + 1}. ${step.description}${step.searchQueries ?
 7. ДАЙ ПРАКТИЧЕСКИЕ СОВЕТЫ И РЕКОМЕНДАЦИИ
 8. ВКЛЮЧИ СТАТИСТИКУ, ФАКТЫ И ПРИМЕРЫ ГДЕ ВОЗМОЖНО
 
+ВАЖНО ПО ДАТАМ И ВРЕМЕНИ:
+- Дата "сегодня" ВСЕГДА определяется по данным сервера (АКТУАЛЬНАЯ ДАТА И ВРЕМЯ).
+- НЕ интерпретируй и НЕ угадывай дату самостоятельно.
+- Используй ТОЛЬКО дату, явно указанную в данных поиска.
+
+ЗАПРЕЩЕНО:
+- Говорить, что у тебя нет доступа к интернету
+- Советовать пользователю искать данные самостоятельно
+
+ЕСЛИ В КОНТЕКСТЕ ЕСТЬ ИНФОРМАЦИЯ ИЗ ИНТЕРНЕТА:
+- ЗАПРЕЩЕНО говорить, что у тебя нет доступа к интернету
+- ЗАПРЕЩЕНО советовать искать информацию самостоятельно
+- ТЫ ОБЯЗАН использовать предоставленные данные
+
+ЕСЛИ В КОНТЕКСТЕ НЕТ БЛОКА WEATHER_DATA:
+- ТЫ НЕ ИМЕЕШЬ ПРАВА ОПИСЫВАТЬ ПОГОДУ
+- ЗАПРЕЩЕНО ДОГАДЫВАТЬСЯ
+- ЗАПРЕЩЕНО ИСПОЛЬЗОВАТЬ ОБЩИЕ ЗНАНИЯ
+
+ЕСЛИ В КОНТЕКСТЕ НЕТ БЛОКА CRYPTO_PRICE:
+- ТЫ НЕ ИМЕЕШЬ ПРАВА УКАЗЫВАТЬ КУРС КРИПТОВАЛЮТ
+- ЗАПРЕЩЕНО ДОГАДЫВАТЬСЯ О ЦЕНЕ
+- ЗАПРЕЩЕНО ИСПОЛЬЗОВАТЬ ОБЩИЕ ЗНАНИЯ
+
+Если данные отсутствуют — укажи, что сервер не смог их получить.
+
 Дай полный и максимально подробный ответ на вопрос пользователя.`;
   }
 
@@ -971,34 +938,54 @@ ${plan.map((step, idx) => `${idx + 1}. ${step.description}${step.searchQueries ?
     },
     // Включаем предыдущую историю чата
     ...messages.slice(0, -1),
-    // Финальный запрос с результатами поиска
-    {
-      role: 'user',
-      content: finalSearchResults
-        ? `${userMessage.content}\n\nИНФОРМАЦИЯ ИЗ ИНТЕРНЕТА:\n${finalSearchResults}`
-        : userMessage.content
-    }
   ];
+
+  // Если есть результаты поиска, добавляем их как отдельное system message с явным временем
+  if (finalSearchResults) {
+    const now = new Date();
+    const todayHuman = now.toLocaleDateString('ru-RU', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    });
+
+    finalMessages.push({
+      role: 'system',
+      content: `ТЕКУЩАЯ ДАТА И ВРЕМЯ КЛИЕНТА:\n${todayHuman}\n\nДАННЫЕ ИЗ ИНТЕРНЕТА:\n${finalSearchResults}`
+    });
+  }
+
+  // Финальный запрос пользователя
+  finalMessages.push({
+    role: 'user',
+    content: userMessage.content
+  });
 
   console.log('📤 Final request messages count:', finalMessages.length);
   console.log('🎯 System prompt length:', systemPrompt.length);
   console.log('🔍 Final search results length:', finalSearchResults.length);
+  console.log('🔗 Request will include requestId:', !!requestId, 'value:', requestId);
 
   // Отправляем финальный запрос к API
+  console.log('🔧 Building request options, requestId status:', { exists: !!requestId, value: requestId });
   const requestOptions: RequestInit = {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
+    credentials: "include",
     body: JSON.stringify({
       messages: finalMessages,
       model: actualModel,
       stream: true,
+      useWebSearch: internetEnabled === true,
       ...modelParams,
-      userId: userId,
+      // userId удаляем — сервер определяет пользователя по req.session.userId
       sessionId: sessionId,
+      ...(requestId && { requestId }), // requestId conditional inclusion
     }),
   };
+  console.log('✅ Request options built successfully');
 
   // Диагностика для отладки
   console.log("🧪 abortSignal typeof:", typeof abortSignal, abortSignal);
@@ -1028,7 +1015,8 @@ ${plan.map((step, idx) => `${idx + 1}. ${step.description}${step.searchQueries ?
   const response = await fetch(`${API_BASE_URL}/chat`, requestOptions);
 
   if (!response.ok) {
-    throw new Error(`API request failed: ${response.status}`);
+    const text = await response.text().catch(() => "");
+    throw new Error(`API request failed: ${response.status} ${text}`);
   }
 
   const reader = response.body?.getReader();
@@ -1069,7 +1057,7 @@ ${plan.map((step, idx) => `${idx + 1}. ${step.description}${step.searchQueries ?
     }
   }
 
-  console.log(`✅ Final Answer Completed | Length: ${fullResponse.length} chars | Model: ${actualModel} | Plan used: ${plan.length > 0 ? 'yes' : 'no'}`);
+      console.log(`✅ Final Answer Completed | Length: ${fullResponse.length} chars | Model: ${MODEL} | Plan used: ${plan.length > 0 ? 'yes' : 'no'}`);
   return fullResponse;
 };
 
@@ -1122,29 +1110,6 @@ const getSimpleResponse = async (query: string): Promise<string> => {
 };
 
 // Функция для определения реальной модели DeepSeek на основе выбранного режима
-const getActualModel = (selectedModel: string): string => {
-  switch (selectedModel) {
-    case 'pro':
-      return 'deepseek-reasoner'; // DeepSeek Reasoner для Pro режима
-    case 'lite':
-    default:
-      return 'deepseek-chat'; // DeepSeek Chat для Lite режима
-  }
-};
-
-// Получить параметры для модели
-const getModelParams = (selectedModel: string) => {
-  if (selectedModel === 'pro') {
-    return {
-      max_tokens: 12000, // увеличенное ограничение для DeepSeek Reasoner
-      temperature: 0.7  // стандартная креативность
-    };
-  }
-  return {
-    max_tokens: 12000, // увеличенное ограничение для DeepSeek Chat
-    temperature: 0.7  // стандартная креативность
-  };
-};
 
 // === Website Artifacts ===
 
@@ -1169,8 +1134,11 @@ export function extractBalancedJsonObject(raw: string): string | null {
   if (!raw) return null;
 
   const s = stripCodeFences(raw);
-  const start = s.indexOf("{");
-  if (start === -1) return null;
+
+  // Try multiple starting positions in case there are extra characters before JSON
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const start = s.indexOf("{", attempt === 0 ? 0 : s.indexOf("{", attempt * 50) + 1);
+    if (start === -1) break;
 
   let depth = 0;
   let inString = false;
@@ -1208,13 +1176,171 @@ export function extractBalancedJsonObject(raw: string): string | null {
     if (ch === "}") {
       depth--;
       if (depth === 0) {
-        return s.slice(start, i + 1);
+          const candidate = s.slice(start, i + 1);
+          // Quick validation: try to parse it
+          try {
+            JSON.parse(candidate);
+            return candidate;
+          } catch {
+            // Invalid JSON, continue searching
+            continue;
+          }
+        }
       }
     }
   }
 
-  // JSON обрезан/не завершён
+  // If no complete JSON found, try to extract partial but valid JSON
+  // Look for the last complete object in case of truncation
+  let lastValidJson = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const start = s.indexOf("{", attempt * 100);
+    if (start === -1) break;
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let lastClosingBrace = -1;
+
+    for (let i = start; i < s.length; i++) {
+      const ch = s[i];
+
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (ch === "\\") {
+          escaped = true;
+          continue;
+        }
+        if (ch === '"') {
+          inString = false;
+          continue;
+        }
+        continue;
+      }
+
+      if (ch === '"') {
+        inString = true;
+        continue;
+      }
+
+      if (ch === "{") {
+        depth++;
+        continue;
+      }
+
+      if (ch === "}") {
+        depth--;
+        if (depth === 0) {
+          lastClosingBrace = i;
+          const candidate = s.slice(start, i + 1);
+          try {
+            JSON.parse(candidate);
+            lastValidJson = candidate;
+          } catch {
+            // Keep the last valid one
+          }
+        }
+      }
+    }
+
+    if (lastValidJson) break;
+  }
+
+  return lastValidJson;
+}
+
+/** Fallback JSON extraction for truncated responses */
+function extractJsonFallback(raw: string): string | null {
+  const s = stripCodeFences(raw);
+
+  // Look for common patterns that might indicate partial JSON
+  const patterns = [
+    /\{\s*"assistantText"\s*:/i,
+    /\{\s*"artifact"\s*:/i,
+    /"files"\s*:\s*\{/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = s.match(pattern);
+    if (match) {
+      const start = match.index!;
+      // Try to extract from this point, looking for closing braces
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+
+      for (let i = start; i < s.length; i++) {
+        const ch = s[i];
+
+        if (inString) {
+          if (escaped) {
+            escaped = false;
+            continue;
+          }
+          if (ch === "\\") {
+            escaped = true;
+            continue;
+          }
+          if (ch === '"') {
+            inString = false;
+            continue;
+          }
+          continue;
+        }
+
+        if (ch === '"') {
+          inString = true;
+          continue;
+        }
+
+        if (ch === "{") {
+          depth++;
+        } else if (ch === "}") {
+          depth--;
+          if (depth === 0) {
+            const candidate = s.slice(start, i + 1);
+            // Try to validate and fix this JSON
+            try {
+              JSON.parse(candidate);
+              return candidate;
+            } catch {
+              // Try to fix it
+              const fixed = fixCommonJsonIssues(candidate);
+              if (fixed !== candidate) {
+                try {
+                  JSON.parse(fixed);
+                  return fixed;
+                } catch {
+                  // continue
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   return null;
+}
+
+/** Fix common JSON formatting issues */
+function fixCommonJsonIssues(jsonText: string): string {
+  let fixed = jsonText;
+
+  // Remove trailing commas before closing braces/brackets
+  fixed = fixed.replace(/,(\s*[}\]])/g, '$1');
+
+  // Add missing quotes around unquoted keys (basic fix)
+  fixed = fixed.replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":');
+
+  // Fix single quotes to double quotes (basic)
+  fixed = fixed.replace(/'/g, '"');
+
+  return fixed;
 }
 
 export function safeParseArtifactResponse(raw: string) {
@@ -1232,12 +1358,32 @@ export function safeParseArtifactResponse(raw: string) {
   console.log("📝 extractBalancedJsonObject result length:", jsonText?.length ?? null);
 
   if (!jsonText) {
+    // Try more aggressive extraction: look for JSON-like patterns
+    const fallbackJson = extractJsonFallback(raw);
+    if (fallbackJson) {
+      console.log("🔄 Using fallback JSON extraction");
+      try {
+        return JSON.parse(fallbackJson);
+      } catch {
+        // ignore
+      }
+    }
     throw new Error("Model output does not contain a complete JSON object (likely truncated).");
   }
 
   try {
     return JSON.parse(jsonText);
   } catch (e: any) {
+    // Try to fix common JSON issues
+    const fixedJson = fixCommonJsonIssues(jsonText);
+    if (fixedJson !== jsonText) {
+      console.log("🔧 Attempting to fix JSON issues");
+      try {
+        return JSON.parse(fixedJson);
+      } catch {
+        // ignore
+      }
+    }
     throw new Error(`JSON parse failed: ${e?.message ?? e}`);
   }
 }
@@ -1388,68 +1534,313 @@ export const detectWebsiteIntent = (userMessage: string): boolean => {
 
 // Функция для генерации веб-артефакта через DeepSeek
 // Системные промпты для генерации артефактов
-const systemPromptFull = `
-Ты — эксперт-разработчик. Генерируешь небольшой React + TypeScript + Vite проект.
+const systemPromptProductStatic = `
 
-КРИТИЧНО: верни ТОЛЬКО валидный JSON. Никакого markdown. Начни ответ с { и закончи }.
+Ты — senior product front-end инженер.
 
-Ограничения размера (обязательно):
-- Максимум 4 файла: index.html, main.tsx, App.tsx, index.css
-- Никаких дополнительных компонентов/конфигов/пакетных файлов.
-- Каждый файл <= 220 строк и <= 7000 символов.
-- Никаких многоточий "..." и обрезанных фрагментов. Код должен быть полным.
+Ты проектируешь и реализуешь ПРОСТОЙ СТАТИЧЕСКИЙ сайт
 
-Tailwind:
-- В index.css НЕ генерируй большие CSS-таблицы.
-- Разрешено только:
-  @tailwind base;
-  @tailwind components;
-  @tailwind utilities;
-  + максимум 30 строк своих классов.
+в формате СТАТИЧЕСКОГО сайта (без сборки и без backend).
 
-Структура ответа строго такая:
+
+
+РАЗРЕШЕНО ТОЛЬКО:
+
+- HTML, CSS, Vanilla JavaScript
+
+- один index.html, один styles.css, один app.js
+
+- inline <script> запрещён, вся логика только в app.js
+
+- ИКОНКИ: используй Unicode символы (⭐, 📧, 📱, 🏠, 💼, ⚙️, 👥, 📞, ✉️, 🌐, 📍, 🛒, ❤️, 📊, 🔔, 🔍, 📝, ✓, ✗, ☰, ☓)
+
+- ИЗОБРАЖЕНИЯ: используй SVG или CSS-графику вместо внешних изображений
+
+- ШРИФТЫ: используй системные шрифты (Arial, Helvetica, sans-serif; Georgia, serif; 'Courier New', monospace)
+
+- JavaScript: МИНИМАЛЬНЫЙ код, только простые функции
+- JavaScript: НЕ используй localStorage, sessionStorage (не работают в iframe)
+- JavaScript: НЕ используй setTimeout/setInterval для анимаций
+- JavaScript: НЕ используй сложные event listeners
+
+
+СТРОГО ЗАПРЕЩЕНО:
+
+- любые фреймворки (React/Vue/Svelte/Angular)
+
+- любые сборщики (Vite/Webpack/Rollup)
+
+- TypeScript / JSX / TSX
+
+- npm, package.json
+
+- import / export
+
+- любые внешние библиотеки, CDN, шрифты, иконки
+
+- любые network-запросы (fetch, xhr, websocket)
+
+- любые HTTP/HTTPS ссылки на изображения (используй только SVG или data: URLs)
+
+- Google Fonts, Font Awesome, Bootstrap или любые другие CDN
+
+- внешние API или сервисы
+
+
+
+---
+
+
+
+## ЦЕЛЬ (КРИТИЧНО)
+
+Это НЕ демо, НЕ лендинг и НЕ UI-заглушка.
+
+
+
+Это РЕАЛИЗАЦИЯ РЕАЛЬНОГО ПРОДУКТА:
+
+- с бизнес-логикой
+
+- с состояниями
+
+- с правилами и ограничениями
+
+- с пользовательскими сценариями
+
+
+
+Если сайт не ведёт себя как продукт — ответ считается НЕПРАВИЛЬНЫМ.
+
+
+
+---
+
+
+
+## ОБЯЗАТЕЛЬНО: БИЗНЕС-МОДЕЛЬ
+
+Перед реализацией мысленно задай и реализуй:
+
+
+
+1) Домены (entities)
+
+   Пример: users, items, orders, tasks, messages и т.п.
+
+   Хранятся в памяти и в localStorage.
+
+
+
+2) Бизнес-правила
+
+   Пример:
+
+   - нельзя удалить активную сущность
+
+   - лимиты (макс. N)
+
+   - обязательные поля
+
+   - статусы (draft / active / archived)
+
+   - ошибки и валидация
+
+
+
+3) Пользовательские сценарии (flows)
+
+   Минимум 3:
+
+   - создание сущности
+
+   - изменение состояния
+
+   - обработка ошибки / ограничения
+
+
+
+Все кнопки ДОЛЖНЫ менять состояние данных.
+
+Нет пустых обработчиков. Нет console.log вместо логики.
+
+
+
+---
+
+
+
+## ОБЯЗАТЕЛЬНО: СОСТОЯНИЕ
+
+- единый источник состояния (state object)
+
+- синхронизация с localStorage
+
+- восстановление состояния при перезагрузке
+
+- UI всегда отражает текущее состояние
+
+
+
+---
+
+
+
+## ОБЯЗАТЕЛЬНО: UI / UX
+
+- адаптив (mobile-first)
+
+- layout: grid / cards
+
+- визуальные состояния:
+
+  - empty
+
+  - loading (эмулированный)
+
+  - error
+
+  - success
+
+- модальные окна
+
+- тост-уведомления
+
+- доступность (ARIA, focus, keyboard)
+
+- prefers-reduced-motion
+
+
+
+---
+
+
+
+## ОБЯЗАТЕЛЬНО: ПРОДУКТОВЫЕ ФИЧИ
+
+Минимум:
+
+- навигация + scrollspy
+
+- форма с полной валидацией
+
+- модальное создание / редактирование сущности
+
+- фильтрация / сортировка данных
+
+- переключатель темы (light / dark)
+
+- undo или подтверждение опасных действий
+
+- при необходимости корзина предметов
+
+- красивые анимации
+---
+
+
+
+## ПРОИЗВОДИТЕЛЬНОСТЬ
+
+- event delegation
+
+- минимальные перерисовки
+
+- чистая архитектура функций
+
+- никакого дублирования логики
+
+
+
+---
+
+
+
+## ОГРАНИЧЕНИЯ ПО ФАЙЛАМ
+
+- РОВНО 3 файла:
+
+  - index.html
+
+  - styles.css
+
+  - app.js
+
+- каждый файл ≤ 220 строк
+
+- каждый файл ≤ 7000 символов
+
+- код полностью готов к открытию в браузере
+
+
+
+---
+
+
+
+## ФОРМАТ ОТВЕТА (КРИТИЧНО)
+
+Верни ТОЛЬКО валидный JSON.
+
+Никакого markdown.
+
+Никакого текста вне JSON.
+
+
+
+Строгая структура:
+
 {
-  "assistantText": "2-3 предложения",
+
+  "assistantText": "Кратко (2–3 предложения): что это за продукт и какие задачи решает",
+
   "artifact": {
-    "title": "Название",
+
+    "title": "Название продукта",
+
     "files": {
+
       "index.html": "...",
-      "main.tsx": "...",
-      "App.tsx": "...",
-      "index.css": "..."
+
+      "styles.css": "...",
+
+      "app.js": "..."
+
     },
-    "deps": {
-      "react": "^18.2.0",
-      "react-dom": "^18.2.0",
-      "tailwindcss": "^3.4.0"
-    }
+
+    "deps": {}
+
   }
+
 }
+
 `.trim();
 
 const systemPromptCompact = `
-Ты — эксперт-разработчик. Генерируешь компактный статический сайт (без React/TS/Vite).
 
-КРИТИЧНО: верни ТОЛЬКО валидный JSON. Никакого markdown. Начни ответ с { и закончи }.
+Ты генерируешь статический сайт без сборки: только index.html, styles.css, app.js.
+
+Запрещено: любые фреймворки, Vite/Webpack, TypeScript/JSX/TSX, npm, package.json, внешние библиотеки, любые CDN, import/export выражения в JavaScript.
+
+Используй только: системные шрифты, Unicode иконки (⭐📧📱🏠💼⚙️👥📞✉️🌐📍🛒❤️📊🔔🔍📝✓✗☰☓), SVG для изображений, CSS для стилизации.
+
+JavaScript: минимальный, без localStorage, без setTimeout, только простые event listeners.
+
+
 
 Ограничения:
-- Ровно 3 файла: index.html, styles.css, app.js
-- Каждый файл <= 180 строк и <= 5000 символов
-- Никаких "..." и обрезанных фрагментов
 
-Структура ответа строго такая:
-{
-  "assistantText": "2-3 предложения",
-  "artifact": {
-    "title": "Название",
-    "files": {
-      "index.html": "...",
-      "styles.css": "...",
-      "app.js": "..."
-    },
-    "deps": {}
-  }
-}
+- РОВНО 3 файла: index.html, styles.css, app.js
+
+- Каждый файл <= 160 строк и <= 4500 символов
+
+- Полный код, без "..."
+
+
+
+КРИТИЧНО: верни ТОЛЬКО валидный JSON (без markdown), начни с { и закончи }.
+
+Структура: { assistantText, artifact:{ title, files:{...}, deps:{} } }
+
 `.trim();
 
 // Вспомогательные функции
@@ -1458,25 +1849,29 @@ const isTruncatedJson = (e: unknown) =>
 
 async function callArtifactModel(
   userPrompt: string,
-  model: string,
   systemPrompt: string,
-  maxTokens: number
+  params: { max_tokens: number; temperature: number },
+  requestId?: string
 ): Promise<string> {
+  // Используем единую модель проекта
+  const actualModel = MODEL;
+
   const resp = await fetch(`${API_BASE_URL}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        messages: [
+    body: JSON.stringify({
+      messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
-        ],
-      model: model === "lite" ? "deepseek-chat" : "deepseek-reasoner",
-        stream: false,
-        response_format: { type: "json_object" },
-      max_tokens: maxTokens,
-        temperature: 0.2,
-      }),
-    });
+      ],
+      model: actualModel,
+      stream: false,
+      // если ваш backend/DeepSeek это не поддерживает — можно удалить:
+      response_format: { type: "json_object" },
+      ...params,
+      requestId,
+    }),
+  });
 
   if (!resp.ok) {
     throw new Error(`Artifact API failed: ${resp.status} ${resp.statusText}`);
@@ -1490,253 +1885,203 @@ async function callArtifactModel(
 }
 
 export const generateWebsiteArtifact = async (
-  userPrompt: string,
-  model: string = "deepseek-chat"
+  userPrompt: string
 ): Promise<{ artifact: WebsiteArtifact; assistantText: string }> => {
-  try {
-    console.log('🎨 STARTING website artifact generation for prompt:', userPrompt);
-    console.log('🔧 Using model:', model);
+  console.log("🎨 STARTING website artifact generation for prompt:", userPrompt);
+  console.log("🔧 Using model:", MODEL);
 
-    // 1) Сначала пытаемся с полным React промптом
-    console.log('🚀 Attempt 1: Calling with full React prompt');
-    const raw1 = await callArtifactModel(userPrompt, model, systemPromptFull, 5500);
+  // Attempt 1: Product static app
+  const raw1 = await callArtifactModel(userPrompt, systemPromptProductStatic, ARTIFACT_PARAMS);
+
+  try {
+    const parsed1 = safeParseArtifactResponse(raw1);
+    const out1 = processArtifact(parsed1);
+    validateProductStatic(out1.artifact);
+    console.log("🧾 Artifact files:", Object.keys(out1.artifact.files));
+    return out1;
+  } catch (e: any) {
+    const retryable =
+      isTruncatedJson(e) || e?.code === "FRAMEWORK_VIOLATION" || e?.code === "INVALID_ARTIFACT";
+
+    if (!retryable) throw e;
+
+    console.log("⚠️ Retry with compact vanilla prompt");
+    const raw2 = await callArtifactModel(userPrompt, systemPromptCompact, ARTIFACT_PARAMS);
 
     try {
-      const parsed = safeParseArtifactResponse(raw1);
-      console.log("✅ Full React artifact generated successfully");
-      return processArtifact(parsed);
-    } catch (e) {
-      // 2) Если JSON обрезан — ретрай с компактным промптом
-      if (!isTruncatedJson(e)) throw e;
-
-      console.log('⚠️ JSON truncated, retrying with compact prompt');
-      const raw2 = await callArtifactModel(userPrompt, model, systemPromptCompact, 3000);
       const parsed2 = safeParseArtifactResponse(raw2);
-      console.log("✅ Compact artifact generated successfully");
-      return processArtifact(parsed2);
+    const out2 = processArtifact(parsed2);
+    validateProductStatic(out2.artifact);
+    console.log("🧾 Artifact files (retry):", Object.keys(out2.artifact.files));
+    return out2;
+    } catch (e2: any) {
+      console.log("⚠️ Second attempt also failed, trying ultra-compact mode");
+
+      // Third attempt: ultra-compact with minimal tokens
+      const raw3 = await callArtifactModel(userPrompt, systemPromptCompact, ARTIFACT_PARAMS);
+      const parsed3 = safeParseArtifactResponse(raw3);
+      const out3 = processArtifact(parsed3);
+      validateProductStatic(out3.artifact);
+      console.log("🧾 Artifact files (ultra-retry):", Object.keys(out3.artifact.files));
+      return out3;
     }
-  } catch (error) {
-    console.error('❌ Error generating website artifact:', error);
-    throw error;
   }
 };
 
+// Валидатор для Product Static артефактов
+function validateProductStatic(artifact: any) {
+  const files = artifact?.files || {};
+  const must = ["/index.html", "/styles.css", "/app.js"];
+
+  for (const p of must) {
+    if (typeof files[p] !== "string" || !files[p].trim()) {
+      const err: any = new Error(`Missing required file: ${p}`);
+      err.code = "INVALID_ARTIFACT";
+      throw err;
+    }
+  }
+
+  const joined = Object.entries(files).map(([k, v]) => `${k}\n${v}`).join("\n\n");
+
+  const forbidden = [
+    /from\s+["']react["']/i,
+    /\breact\b/i,
+    /\bvite\b/i,
+    /\bwebpack\b/i,
+    /\btypescript\b/i,
+    /\btsx\b/i,
+    /package\.json/i,
+    /node_modules/i,
+    /unpkg\.com/i,
+    /jsdelivr\.net/i,
+    /fonts\.googleapis\.com/i,
+    /https?:\/\/.*cdn/i,
+    /https?:\/\/fonts\.googleapis\.com/i,
+    /https?:\/\/cdnjs\.cloudflare\.com/i,
+    /https?:\/\/stackpath\.bootstrapcdn\.com/i,
+    /https?:\/\/use\.fontawesome\.com/i,
+    /https?:\/\/kit\.fontawesome\.com/i,
+    /https?:\/\/images\.unsplash\.com/i,
+    /https?:\/\/picsum\.photos/i,
+    /https?:\/\/via\.placeholder\.com/i,
+    /https?:\/\/loremflickr\.com/i,
+    /https?:\/\/http.*\.(jpg|jpeg|png|gif|svg|webp|ico)/i,
+    /https?:\/\/.*\.(jpg|jpeg|png|gif|svg|webp|ico)/i,
+    /<link[^>]*href=["']https?:\/\//i,
+    /<img[^>]*src=["']https?:\/\//i,
+  ];
+
+  if (forbidden.some(rx => rx.test(joined))) {
+    const err: any = new Error("Framework/CDN content is not allowed");
+    err.code = "FRAMEWORK_VIOLATION";
+    throw err;
+  }
+}
+
+// Функция для очистки внешних ссылок из кода
+function sanitizeExternalLinks(code: string): string {
+  return code
+    // Удаляем внешние CSS ссылки
+    .replace(/<link[^>]*href=["']https?:\/\/[^"']*["'][^>]*>/gi, '')
+    // Удаляем внешние изображения
+    .replace(/<img[^>]*src=["']https?:\/\/[^"']*["'][^>]*>/gi, '<div style="width: 100px; height: 100px; background: #f0f0f0; display: flex; align-items: center; justify-content: center; color: #666;">Изображение</div>')
+    // Удаляем @import в CSS
+    .replace(/@import\s+url\(["']https?:\/\/[^"']*["']\);?/gi, '');
+}
+
 // Вспомогательная функция для обработки артефакта
 function processArtifact(parsed: any): { artifact: WebsiteArtifact; assistantText: string } {
-    if (!parsed.artifact || !parsed.artifact.files) {
-      throw new Error('Invalid artifact structure');
+  if (!parsed?.artifact?.files || typeof parsed.artifact.files !== "object") {
+    const err: any = new Error("Invalid artifact structure: missing files");
+    err.code = "INVALID_ARTIFACT";
+    throw err;
+  }
+
+  // Жестко запрещаем React/TS/Vite артефакты
+  const forbiddenKeys = ["App.tsx", "main.tsx", "main.jsx", "App.jsx", "index.css", "package.json"];
+  for (const k of forbiddenKeys) {
+    if (parsed.artifact.files[k]) {
+      const err: any = new Error("Framework output is not allowed");
+      err.code = "FRAMEWORK_VIOLATION";
+      throw err;
     }
+  }
 
-    // Определяем тип артефакта по наличию файлов
-    const hasReactFiles = parsed.artifact.files['App.tsx'] || parsed.artifact.files['main.tsx'];
-    const hasVanillaFiles = parsed.artifact.files['app.js'] || parsed.artifact.files['styles.css'];
+  const correctedFiles: Record<string, string> = {};
 
-    let requiredFiles: string[];
-    let requiredFilesWithPaths: string[];
+  for (const [filePath, content] of Object.entries(parsed.artifact.files)) {
+    if (typeof filePath !== "string" || typeof content !== "string") continue;
 
-    if (hasReactFiles && !hasVanillaFiles) {
-      // React артефакт
-      requiredFiles = ['index.html', 'App.tsx', 'main.tsx', 'index.css'];
-      requiredFilesWithPaths = ['/index.html', '/src/App.tsx', '/src/main.tsx', '/src/index.css'];
-      console.log('🔧 Detected React artifact');
-    } else if (hasVanillaFiles && !hasReactFiles) {
-      // Vanilla JS артефакт
-      requiredFiles = ['index.html', 'app.js', 'styles.css'];
-      requiredFilesWithPaths = ['/index.html', '/app.js', '/styles.css'];
-      console.log('🔧 Detected vanilla JS artifact');
-    } else {
-      // Неопределенный тип - предполагаем React
-      requiredFiles = ['index.html', 'App.tsx', 'main.tsx', 'index.css'];
-      requiredFilesWithPaths = ['/index.html', '/src/App.tsx', '/src/main.tsx', '/src/index.css'];
-      console.log('🔧 Unknown artifact type, assuming React');
-    }
+    if (filePath === "index.html" || filePath === "/index.html") {
+      let html = content;
 
-    // Создаем массив отсутствующих файлов
-    const missingFiles: string[] = [];
-    requiredFiles.forEach(file => {
-      const hasFile = parsed.artifact.files[file] ||
-                      parsed.artifact.files[`/src/${file}`] ||
-                      parsed.artifact.files[`/${file}`];
-      if (!hasFile) {
-        missingFiles.push(file);
+      // гарантируем правильные ссылки
+      html = html.replace(/href="[^"]*styles\.css"/g, 'href="/styles.css"');
+      html = html.replace(/src="[^"]*app\.js"/g, 'src="/app.js"');
+
+      // если вообще нет подключений — добавим (мягко)
+      if (!/styles\.css/.test(html)) {
+        html = html.replace(/<\/head>/i, `  <link rel="stylesheet" href="/styles.css">\n</head>`);
       }
-    });
-
-    if (missingFiles.length > 0) {
-      console.log('⚠️ Missing required files, will add defaults:', missingFiles);
-    }
-
-    // Исправляем структуру файлов для Vite (перемещаем файлы в правильные папки)
-    const correctedFiles: Record<string, string> = {};
-
-    // Проверяем, что parsed имеет правильную структуру
-    if (!parsed?.artifact?.files || typeof parsed.artifact.files !== 'object') {
-      throw new Error('Invalid artifact structure: missing or invalid files');
-    }
-
-    // Корректируем структуру файлов в зависимости от типа артефакта
-    Object.entries(parsed.artifact.files).forEach(([filePath, content]) => {
-      if (typeof filePath !== 'string' || typeof content !== 'string') {
-        console.warn(`Skipping invalid file entry: ${filePath}`);
-        return;
+      if (!/app\.js/.test(html)) {
+        html = html.replace(/<\/body>/i, `  <script defer src="/app.js"></script>\n</body>`);
       }
 
-      if (hasReactFiles) {
-        // Для React артефактов - перемещаем в /src/
-      if (filePath === 'main.tsx' || filePath === 'main.jsx') {
-        correctedFiles['/src/main.tsx'] = content.replace(/from '\.\/App'/g, "from './App'");
-      } else if (filePath === 'App.tsx' || filePath === 'App.jsx') {
-        correctedFiles['/src/App.tsx'] = content;
-      } else if (filePath === 'index.css' || filePath === 'styles.css') {
-        correctedFiles['/src/index.css'] = content;
-      } else if (filePath === 'index.html') {
-        // Исправляем ссылку на main.tsx в index.html
-        const correctedContent = content.replace(
-          /src="[^"]*main\.[jt]sx?"/g,
-          'src="/src/main.tsx"'
-        );
-        correctedFiles['/index.html'] = correctedContent;
-      } else {
-        correctedFiles[filePath.startsWith('/') ? filePath : `/${filePath}`] = content;
-        }
-      } else {
-        // Для vanilla JS артефактов - оставляем в корне
-        if (filePath === 'index.html') {
-          // Исправляем ссылки на скрипты
-          let correctedContent = content;
-          correctedContent = correctedContent.replace(/src="[^"]*app\.js"/g, 'src="/app.js"');
-          correctedContent = correctedContent.replace(/href="[^"]*styles\.css"/g, 'href="/styles.css"');
-          correctedFiles['/index.html'] = correctedContent;
-        } else if (filePath === 'app.js') {
-          correctedFiles['/app.js'] = content;
-        } else if (filePath === 'styles.css') {
-          correctedFiles['/styles.css'] = content;
-        } else {
-          correctedFiles[filePath.startsWith('/') ? filePath : `/${filePath}`] = content;
-        }
-      }
-    });
+      correctedFiles["/index.html"] = sanitizeExternalLinks(html);
+    } else if (filePath === "styles.css" || filePath === "/styles.css") {
+      correctedFiles["/styles.css"] = sanitizeExternalLinks(content);
+    } else if (filePath === "app.js" || filePath === "/app.js") {
+      // Санитизация: запрещаем import CSS (не работает в браузере)
+      let sanitizedJs = content
+        .split("\n")
+        .filter(line => !/^\s*import\s+["'][^"']*\.css["']\s*;?\s*$/.test(line))
+        .join("\n");
 
-    // Обновляем файлы в артефакте
-    parsed.artifact.files = correctedFiles;
+      correctedFiles["/app.js"] = sanitizedJs;
+    }
+  }
 
-    // Добавляем недостающие файлы с правильными путями
-    if (hasReactFiles) {
-      // Дефолтные файлы для React артефактов
-      if (!correctedFiles['/index.html']) {
-        correctedFiles['/index.html'] = `<!DOCTYPE html>
+  // Дефолты (если модель что-то не дала)
+  if (!correctedFiles["/index.html"]) {
+    correctedFiles["/index.html"] = `<!doctype html>
 <html lang="ru">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>${parsed.artifact.title || 'Сайт'}</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
-</html>`;
-    }
-
-      if (!correctedFiles['/src/main.tsx']) {
-        correctedFiles['/src/main.tsx'] = `import React from 'react'
-import ReactDOM from 'react-dom/client'
-import App from './App'
-import './index.css'
-
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-)`;
-    }
-
-      if (!correctedFiles['/src/App.tsx']) {
-        correctedFiles['/src/App.tsx'] = `export default function App() {
-  return (
-    <div className="min-h-screen bg-blue-50 flex items-center justify-center">
-      <div className="text-center">
-        <h1 className="text-4xl font-bold text-blue-600 mb-4">
-          Сайт создан!
-        </h1>
-        <p className="text-gray-600">
-          Добро пожаловать на новый сайт
-        </p>
-      </div>
-    </div>
-  )
-}`;
-    }
-
-      if (!correctedFiles['/src/index.css']) {
-        correctedFiles['/src/index.css'] = `@tailwind base;
-@tailwind components;
-@tailwind utilities;`;
-      }
-    } else {
-      // Дефолтные файлы для vanilla JS артефактов
-      if (!correctedFiles['/index.html']) {
-        correctedFiles['/index.html'] = `<!DOCTYPE html>
-<html lang="ru">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>${parsed.artifact.title || 'Сайт'}</title>
-    <link rel="stylesheet" href="/styles.css">
+  <title>${parsed.artifact.title || "Сайт"}</title>
+  <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <div id="app"></div>
-    <script src="/app.js"></script>
+  <script defer src="/app.js"></script>
   </body>
 </html>`;
       }
 
-      if (!correctedFiles['/app.js']) {
-        correctedFiles['/app.js'] = `// Простое vanilla JS приложение
-document.addEventListener('DOMContentLoaded', function() {
-  const app = document.getElementById('app');
-  if (app) {
-    app.innerHTML = \`
-      <div style="min-height: 100vh; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); display: flex; align-items: center; justify-content: center;">
-        <div style="text-align: center; color: white;">
-          <h1 style="font-size: 3rem; font-weight: bold; margin-bottom: 1rem;">
-            Сайт создан!
-          </h1>
-          <p style="font-size: 1.25rem;">
-            Добро пожаловать на новый сайт
-          </p>
-        </div>
-      </div>
-    \`;
+  if (!correctedFiles["/styles.css"]) {
+    correctedFiles["/styles.css"] = `:root{--bg:#0b1020;--fg:#eaf0ff;--muted:#a7b0cc;}
+
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--fg)}
+
+#app{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}`;
   }
-});`;
-      }
 
-      if (!correctedFiles['/styles.css']) {
-        correctedFiles['/styles.css'] = `/* Простые стили */
-body {
-  margin: 0;
-  padding: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-}
+  if (!correctedFiles["/app.js"]) {
+    correctedFiles["/app.js"] = `document.addEventListener("DOMContentLoaded",()=>{document.getElementById("app").innerHTML="<h1>Сайт создан</h1><p>Добавьте контент по запросу пользователя.</p>";});`;
+  }
 
-#app {
-  min-height: 100vh;
-}`;
-      }
-    }
-
-    console.log('✅ Website artifact generated successfully');
+  parsed.artifact.files = correctedFiles;
+  parsed.artifact.deps = {}; // гарантируем пустые deps
+  parsed.artifact.title = parsed.artifact.title || "Static HTML/CSS/JS Site";
     
     return {
       artifact: parsed.artifact,
-      assistantText: parsed.assistantText || 'Я создал для вас веб-сайт!'
+    assistantText: parsed.assistantText || "Я создал статический сайт на HTML/CSS/JS без сборки.",
     };
   }
 
 export const sendChatMessage = async (
   messages: Message[],
-  selectedModel: string = "lite",
   onChunk?: (chunk: string) => void,
   onPlanGenerated?: (plan: PlanStep[]) => void,
   onStepStart?: (stepIndex: number, step: PlanStep) => void,
@@ -1744,26 +2089,35 @@ export const sendChatMessage = async (
   internetEnabled?: boolean,
   onTokenCost?: (tokenCost: TokenCost) => void,
   abortSignal?: AbortSignal,
-  userId?: number,
-  sessionId?: number
+  sessionId?: number,
+  requestId?: string
 ): Promise<string> => {
+  console.log(`🔍 sendChatMessage called with requestId:`, requestId, `typeof:`, typeof requestId);
+
   const userMessage = messages[messages.length - 1];
   const messageSummary = messages.map((msg, i) => `${i}:${msg.role}(${msg.content.length}ch)`).join(', ');
-  const actualModel = getActualModel(selectedModel);
-  console.log(`🚀 sendChatMessage | Selected: ${selectedModel} → DeepSeek: ${actualModel} | Messages: ${messages.length} | Internet: ${internetEnabled} | Last message: "${userMessage?.content?.substring(0, 80) || 'none'}..." | Summary: [${messageSummary}]`);
+  const actualModel = MODEL;
+  console.log(`🚀 sendChatMessage | Model: ${actualModel} | Messages: ${messages.length} | Internet: ${internetEnabled} | Last message: "${userMessage?.content?.substring(0, 80) || 'none'}..." | Summary: [${messageSummary}]`);
+
+  // КОНТРОЛЬНЫЙ ЛОГ для отладки приоритета
+  console.log(`[Search Decision] useWebSearch: ${internetEnabled}, isSimple: ${userMessage?.content?.trim().length <= 80 && !userMessage?.content?.toLowerCase().includes('план') && !userMessage?.content?.toLowerCase().includes('анализ')}`);
+
+  // Дополнительное логирование для отладки
+  const isWebsiteRequest = detectWebsiteIntent(userMessage?.content || '');
+  console.log(`🔍 Message analysis: isWebsiteRequest=${isWebsiteRequest}, content="${userMessage?.content?.substring(0, 50) || 'none'}..."`);
 
   // Диагностика abortSignal
   console.log("🧪 abortSignal:", abortSignal, "typeof:", typeof abortSignal);
 
-  console.log(`🔍 Model Check | Selected: ${selectedModel} | DeepSeek: ${actualModel} | Advanced logic: ${selectedModel === 'pro' || (selectedModel === 'lite' && internetEnabled)}`);
+  console.log(`🔍 Advanced logic: ${internetEnabled}`);
 
-  // СПЕЦИАЛЬНАЯ ЛОГИКА ДЛЯ ПРОДВИНУТЫХ МОДЕЛЕЙ (Pro или Lite с интернетом)
-  if (selectedModel === 'pro' || (selectedModel === 'lite' && internetEnabled)) {
-    console.log(`🎯 Advanced Logic | Selected: ${selectedModel} → DeepSeek: ${getActualModel(selectedModel)} | Internet: ${internetEnabled} | User query: "${userMessage?.content?.substring(0, 100) || 'none'}..."`);
-    return handleAdvancedModelLogic(messages, userMessage, selectedModel, abortSignal, onChunk, onPlanGenerated, onStepStart, onSearchProgress, internetEnabled, userId, sessionId);
+  // СПЕЦИАЛЬНАЯ ЛОГИКА ДЛЯ ПРОДВИНУТЫХ МОДЕЛЕЙ (только при включенном интернете)
+  if (internetEnabled) {
+    console.log(`🎯 Advanced Logic | Model: ${actualModel} | Internet: ${internetEnabled} | User query: "${userMessage?.content?.substring(0, 100) || 'none'}..."`);
+    return handleAdvancedModelLogic(messages, userMessage, abortSignal, onChunk, onPlanGenerated, onStepStart, onSearchProgress, internetEnabled, sessionId, requestId);
   }
-  // Получаем параметры для выбранной модели
-  const modelParams = getModelParams(selectedModel);
+  // Получаем параметры для модели
+  const modelParams = MODEL_PARAMS;
 
   // Проверяем, является ли запрос очень простым
   if (userMessage && userMessage.role === 'user') {
@@ -1779,7 +2133,8 @@ export const sendChatMessage = async (
     const isTooShort = lowerQuery.length < 3;
     const isOnlyEmojis = /^[\p{Emoji}\s]+$/u.test(lowerQuery);
 
-    if (isVerySimpleQuery || isTooShort || isOnlyEmojis) {
+    // КРИТИЧНО: Если пользователь выбрал "Использовать интернет" - игнорируем эвристику простых запросов
+    if ((isVerySimpleQuery || isTooShort || isOnlyEmojis) && !internetEnabled) {
       console.log('Simple query detected, returning direct response without search or planning');
       // Возвращаем простой ответ без поиска и планирования
       const simpleResponse = await getSimpleResponse(userMessage.content);
@@ -1880,8 +2235,8 @@ export const sendChatMessage = async (
 
       if (shouldGeneratePlan) {
         try {
-          console.log(`📋 Generating response plan | Query: "${userMessage.content.substring(0, 100)}..." | Selected: ${selectedModel} → Will use DeepSeek Chat`);
-          plan = await generateResponsePlan(userMessage.content, selectedModel, abortSignal);
+          console.log(`📋 Generating response plan | Query: "${userMessage.content.substring(0, 100)}..." | Model: ${MODEL}`);
+          plan = await generateResponsePlan(userMessage.content, internetEnabled, abortSignal);
           console.log(`✅ Plan generated successfully | Steps: ${plan.length}`);
         } catch (planError: any) {
           // Проверяем тип ошибки
@@ -2020,7 +2375,7 @@ export const sendChatMessage = async (
 
           const systemMessage = messages.find(msg => msg.role === 'system') || {
             role: 'system' as const,
-            content: 'Ты полезный AI-ассистент. Каждый чат является полностью независимым и изолированным. Не используй информацию или контекст из других разговоров. Отвечай только на основе предоставленных сообщений в текущем чате.\n\nВАЖНЫЕ ИНСТРУКЦИИ:\n1. ДАВАЙ МАКСИМАЛЬНО ПОДРОБНЫЕ И ОБЪЕМНЫЕ ОТВЕТЫ\n2. ПОЛНОСТЬЮ РАСКРЫВАЙ ЗАПРОШЕННУЮ ТЕМУ\n3. КАЖДЫЙ АСПЕКТ ОБЪЯСНЯЙ ПОДРОБНО С ПРИМЕРАМИ\n4. СТРУКТУРИРУЙ ОТВЕТ С ЗАГОЛОВКАМИ И СПИСКАМИ\n5. ДАВАЙ ПРАКТИЧЕСКИЕ СОВЕТЫ И РЕКОМЕНДАЦИИ\n6. УЧИТЫВАЙ ВСЮ ИСТОРИЮ РАЗГОВОРА'
+            content: 'Ты — AI-ассистент экспертного уровня.\n\nТвоя задача — глубоко, профессионально и системно раскрывать вопросы пользователя, освещая все релевантные аспекты, включая неочевидные, скрытые, вторичные и пограничные.\n\n1. Контекст и изоляция\n\nИспользуй исключительно сообщения текущего диалога как контекст.\n\nНе используй и не предполагай наличие информации из других сессий, чатов или внешних разговоров.\n\n2. Базовый принцип ответа (ключевой приоритет)\n\nКаждый ответ должен быть:\n\nглубоким — выходящим за рамки очевидного;\n\nэкспертным — на уровне специалиста, а не обзорной статьи;\n\nисчерпывающим — без пропусков значимых аспектов;\n\nструктурированным — с чёткой логикой и иерархией.\n\nПоверхностные, обзорные или упрощённые ответы недопустимы.\n\n3. Требование к глубине раскрытия\n\nПри ответе на вопрос:\n\nвыявляй все ключевые и вспомогательные аспекты темы;\n\nотдельно рассматривай:\n\nпрямые механизмы;\n\nкосвенные эффекты;\n\nограничения и крайние случаи;\n\nтипичные ошибки и ложные интерпретации;\n\nнеочевидные зависимости и последствия;\n\nпри необходимости раскрывай контекст более широкого уровня (архитектурный, системный, методологический).\n\nЕсли аспект может повлиять на понимание или применение — он должен быть разобран.\n\n4. Обязательная структура ответа\n\nДля нетривиальных запросов строго соблюдай структуру:\n\nКонцентрированное резюме / основной вывод\n\n— кратко фиксирует суть, не заменяет основной разбор.\n\nПолное системное раскрытие темы\n\n— разбор по аспектам;\n\n— каждый аспект раскрывается подробно и логически;\n\n— явное указание взаимосвязей между аспектами.\n\nНеочевидные и пограничные моменты\n\n— скрытые риски;\n\n— редкие сценарии;\n\n— архитектурные или концептуальные нюансы.\n\nПримеры и иллюстрации\n\n— используются для прояснения сложных моментов;\n\n— допускается несколько примеров, если аспекты различны;\n\n— примеры должны быть прикладными или техническими.\n\nПрактические выводы и рекомендации\n\n— что делать;\n\n— как применять;\n\n— где возможны ограничения.\n\n5. Требования к качеству изложения\n\nОбязательно:\n\nиспользовать точные, профессиональные формулировки;\n\nизбегать повторов и пустых перефразирований;\n\nне упрощать сложные концепции без необходимости;\n\nвыстраивать ответ как экспертное объяснение, а не справку;\n\nподдерживать высокую информационную плотность.\n\n6. Работа с примерами\n\nПримеры:\n\nдолжны иллюстрировать конкретный аспект или риск;\n\nне должны быть абстрактными или учебными;\n\nдопускается несколько примеров, если это повышает глубину понимания.\n\n7. Практическая ориентация\n\nЕсли вопрос имеет прикладной характер:\n\nдавай детальные рекомендации;\n\nуказывай ограничения, риски, trade-offs;\n\nпри необходимости сравнивай альтернативные подходы;\n\nпоясняй, в каких условиях решение работает, а в каких — нет.\n\n8. Предположение о пользователе\n\nПредполагай, что пользователь:\n\nтехнически и концептуально компетентен;\n\nожидает экспертного уровня объяснения;\n\nзаинтересован в глубоком понимании, а не в упрощённом ответе.\n\nНе адаптируйся под «начальный уровень», если это не запрошено явно.'
           };
 
         // Форматируем план для промпта
@@ -2253,7 +2608,7 @@ ${planDescription}
 
         const enhancedMessages = searchContext ? [
           // Системное сообщение
-          systemMessage || { role: 'system' as const, content: 'Ты полезный AI-ассистент. Используй предоставленную информацию из поиска для ответа на вопросы пользователя. Учитывай контекст предыдущих сообщений в чате.\n\nИНСТРУКЦИИ ДЛЯ ПОДРОБНЫХ ОТВЕТОВ:\n• ДАВАЙ МАКСИМАЛЬНО ПОДРОБНЫЕ ОТВЕТЫ\n• ПОЛНОСТЬЮ АНАЛИЗИРУЙ ВСЮ ИНФОРМАЦИЮ ИЗ ПОИСКА\n• КАЖДЫЙ ФАКТ И АСПЕКТ ОБЪЯСНЯЙ ПОДРОБНО\n• СТРУКТУРИРУЙ ОТВЕТ ЛОГИЧНО С ЗАГОЛОВКАМИ\n• ПРИВОДИ СТАТИСТИКУ И ПРИМЕРЫ ИЗ ПОИСКА\n• ДАВАЙ ПРАКТИЧЕСКИЕ ВЫВОДЫ И РЕКОМЕНДАЦИИ' },
+          systemMessage || { role: 'system' as const, content: 'Ты — AI-ассистент экспертного уровня.\n\nТвоя задача — глубоко, профессионально и системно раскрывать вопросы пользователя, используя предоставленную информацию из поиска в интернете, освещая все релевантные аспекты, включая неочевидные, скрытые, вторичные и пограничные.\n\n1. Контекст и изоляция\n\nИспользуй исключительно сообщения текущего диалога и предоставленную информацию из поиска как контекст.\n\nНе используй и не предполагай наличие информации из других сессий, чатов или внешних разговоров.\n\n2. Работа с информацией из поиска\n\nПолностью анализируй всю предоставленную информацию из поиска;\n\nКаждый факт и аспект объясняй подробно;\n\nПриводи статистику и примеры из поиска;\n\nИнтегрируй информацию из поиска в системное раскрытие темы.\n\n3. Базовый принцип ответа (ключевой приоритет)\n\nКаждый ответ должен быть:\n\nглубоким — выходящим за рамки очевидного;\n\nэкспертным — на уровне специалиста, а не обзорной статьи;\n\nисчерпывающим — без пропусков значимых аспектов;\n\nструктурированным — с чёткой логикой и иерархией.\n\nПоверхностные, обзорные или упрощённые ответы недопустимы.\n\n4. Требование к глубине раскрытия\n\nПри ответе на вопрос:\n\nвыявляй все ключевые и вспомогательные аспекты темы;\n\nотдельно рассматривай:\n\nпрямые механизмы;\n\nкосвенные эффекты;\n\nограничения и крайние случаи;\n\nтипичные ошибки и ложные интерпретации;\n\nнеочевидные зависимости и последствия;\n\nпри необходимости раскрывай контекст более широкого уровня (архитектурный, системный, методологический).\n\nЕсли аспект может повлиять на понимание или применение — он должен быть разобран.\n\n5. Обязательная структура ответа\n\nДля нетривиальных запросов строго соблюдай структуру:\n\nКонцентрированное резюме / основной вывод\n\n— кратко фиксирует суть, не заменяет основной разбор.\n\nПолное системное раскрытие темы\n\n— разбор по аспектам;\n\n— каждый аспект раскрывается подробно и логически;\n\n— явное указание взаимосвязей между аспектами.\n\nНеочевидные и пограничные моменты\n\n— скрытые риски;\n\n— редкие сценарии;\n\n— архитектурные или концептуальные нюансы.\n\nПримеры и иллюстрации\n\n— используются для прояснения сложных моментов;\n\n— допускается несколько примеров, если аспекты различны;\n\n— примеры должны быть прикладными или техническими.\n\nПрактические выводы и рекомендации\n\n— что делать;\n\n— как применять;\n\n— где возможны ограничения.\n\n6. Требования к качеству изложения\n\nОбязательно:\n\nиспользовать точные, профессиональные формулировки;\n\nизбегать повторов и пустых перефразирований;\n\nне упрощать сложные концепции без необходимости;\n\nвыстраивать ответ как экспертное объяснение, а не справку;\n\nподдерживать высокую информационную плотность.\n\n7. Работа с примерами\n\nПримеры:\n\nдолжны иллюстрировать конкретный аспект или риск;\n\nне должны быть абстрактными или учебными;\n\nдопускается несколько примеров, если это повышает глубину понимания.\n\n8. Практическая ориентация\n\nЕсли вопрос имеет прикладной характер:\n\nдавай детальные рекомендации;\n\nуказывай ограничения, риски, trade-offs;\n\nпри необходимости сравнивай альтернативные подходы;\n\nпоясняй, в каких условиях решение работает, а в каких — нет.\n\n9. Предположение о пользователе\n\nПредполагай, что пользователь:\n\nтехнически и концептуально компетентен;\n\nожидает экспертного уровня объяснения;\n\nзаинтересован в глубоком понимании, а не в упрощённом ответе.\n\nНе адаптируйся под «начальный уровень», если это не запрошено явно.' },
           // Вся история чата
           ...conversationMessages.slice(0, -1), // Все сообщения кроме последнего
           // Последнее сообщение с контекстом поиска
@@ -2265,7 +2620,7 @@ ${planDescription}
           // Системное сообщение
           systemMessage || {
             role: 'system' as const,
-            content: 'Ты полезный AI-ассистент. Каждый чат является полностью независимым и изолированным. Не используй информацию или контекст из других разговоров. Отвечай только на основе предоставленных сообщений в текущем чате.\n\nИНСТРУКЦИИ ДЛЯ КАЧЕСТВЕННЫХ ОТВЕТОВ:\n• СТРЕМИСЬ К МАКСИМАЛЬНОЙ ПОДРОБНОСТИ И ОБЪЕМНОСТИ\n• ПОЛНОСТЬЮ РАСКРЫВАЙ ТЕМУ ЗАПРОСА\n• КАЖДЫЙ АСПЕКТ ОБЪЯСНЯЙ С ПРИМЕРАМИ\n• СТРУКТУРИРУЙ ОТВЕТ ЛОГИЧНО\n• ДАВАЙ ПРАКТИЧЕСКИЕ СОВЕТЫ\n• ИСПОЛЬЗУЙ ВСЮ ИСТОРИЮ ЧАТА ДЛЯ КОНТЕКСТА'
+            content: 'Ты — AI-ассистент экспертного уровня.\n\nТвоя задача — глубоко, профессионально и системно раскрывать вопросы пользователя, освещая все релевантные аспекты, включая неочевидные, скрытые, вторичные и пограничные.\n\n1. Контекст и изоляция\n\nИспользуй исключительно сообщения текущего диалога как контекст.\n\nНе используй и не предполагай наличие информации из других сессий, чатов или внешних разговоров.\n\n2. Базовый принцип ответа (ключевой приоритет)\n\nКаждый ответ должен быть:\n\nглубоким — выходящим за рамки очевидного;\n\nэкспертным — на уровне специалиста, а не обзорной статьи;\n\nисчерпывающим — без пропусков значимых аспектов;\n\nструктурированным — с чёткой логикой и иерархией.\n\nПоверхностные, обзорные или упрощённые ответы недопустимы.\n\n3. Требование к глубине раскрытия\n\nПри ответе на вопрос:\n\nвыявляй все ключевые и вспомогательные аспекты темы;\n\nотдельно рассматривай:\n\nпрямые механизмы;\n\nкосвенные эффекты;\n\nограничения и крайние случаи;\n\nтипичные ошибки и ложные интерпретации;\n\nнеочевидные зависимости и последствия;\n\nпри необходимости раскрывай контекст более широкого уровня (архитектурный, системный, методологический).\n\nЕсли аспект может повлиять на понимание или применение — он должен быть разобран.\n\n4. Обязательная структура ответа\n\nДля нетривиальных запросов строго соблюдай структуру:\n\nКонцентрированное резюме / основной вывод\n\n— кратко фиксирует суть, не заменяет основной разбор.\n\nПолное системное раскрытие темы\n\n— разбор по аспектам;\n\n— каждый аспект раскрывается подробно и логически;\n\n— явное указание взаимосвязей между аспектами.\n\nНеочевидные и пограничные моменты\n\n— скрытые риски;\n\n— редкие сценарии;\n\n— архитектурные или концептуальные нюансы.\n\nПримеры и иллюстрации\n\n— используются для прояснения сложных моментов;\n\n— допускается несколько примеров, если аспекты различны;\n\n— примеры должны быть прикладными или техническими.\n\nПрактические выводы и рекомендации\n\n— что делать;\n\n— как применять;\n\n— где возможны ограничения.\n\n5. Требования к качеству изложения\n\nОбязательно:\n\nиспользовать точные, профессиональные формулировки;\n\nизбегать повторов и пустых перефразирований;\n\nне упрощать сложные концепции без необходимости;\n\nвыстраивать ответ как экспертное объяснение, а не справку;\n\nподдерживать высокую информационную плотность.\n\n6. Работа с примерами\n\nПримеры:\n\nдолжны иллюстрировать конкретный аспект или риск;\n\nне должны быть абстрактными или учебными;\n\nдопускается несколько примеров, если это повышает глубину понимания.\n\n7. Практическая ориентация\n\nЕсли вопрос имеет прикладной характер:\n\nдавай детальные рекомендации;\n\nуказывай ограничения, риски, trade-offs;\n\nпри необходимости сравнивай альтернативные подходы;\n\nпоясняй, в каких условиях решение работает, а в каких — нет.\n\n8. Предположение о пользователе\n\nПредполагай, что пользователь:\n\nтехнически и концептуально компетентен;\n\nожидает экспертного уровня объяснения;\n\nзаинтересован в глубоком понимании, а не в упрощённом ответе.\n\nНе адаптируйся под «начальный уровень», если это не запрошено явно.'
           },
           // Вся история чата
           ...conversationMessages
@@ -2285,15 +2640,15 @@ ${planDescription}
         // DeepSeek поддерживает streaming
         const useStreaming = true;
 
-        // Получаем параметры для выбранной модели (нужно здесь, так как actualModel определена выше)
-        // ВАЖНО: modelParams должен существовать всегда — иначе при fallback/timeout планера будет ReferenceError
-        const modelParams = getModelParams(selectedModel) ?? { max_tokens: 4000, temperature: 0.7 };
+        // Используем параметры единой модели
+        const modelParams = MODEL_PARAMS;
 
         const requestOptions: RequestInit = {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
+          credentials: "include",
           body: JSON.stringify({
             messages: enhancedMessages.map(msg => ({
               role: msg.role,
@@ -2301,8 +2656,9 @@ ${planDescription}
             })),
             model: actualModel,
             stream: useStreaming,
-            userId: userId || 1,
+            // userId удаляем — сервер определяет пользователя по req.session.userId
             sessionId: sessionId,
+            useWebSearch: internetEnabled,
             ...modelParams,
           }),
         };
@@ -2357,7 +2713,7 @@ ${planDescription}
 
                   // Проверяем наличие информации о токенах
                   if (parsed.usage && onTokenCost) {
-                    const tokenCost = calculateTokenCost(parsed.usage, actualModel);
+                    const tokenCost = calculateTokenCost(parsed.usage);
                     onTokenCost(tokenCost);
                   }
 
@@ -2400,6 +2756,7 @@ ${planDescription}
         headers: {
           'Content-Type': 'application/json',
         },
+        credentials: "include",
           body: JSON.stringify({
             messages: messages.map(msg => ({
               role: msg.role,
@@ -2408,7 +2765,7 @@ ${planDescription}
             model: actualModel,
             stream: useStreaming,
             ...modelParams,
-            userId: userId,
+            // userId удаляем — сервер определяет пользователя по req.session.userId
             sessionId: sessionId,
           }),
         };
@@ -2485,25 +2842,41 @@ ${planDescription}
 
     return fullResponse;
   } catch (error) {
-    console.error('DeepSeek API error:', error);
+    console.error('❌ Error in sendChatMessage:', error);
+    console.error('Error details:', {
+      message: error.message,
+      stack: error.stack,
+      requestId: requestId,
+      model: MODEL
+    });
     throw error;
   }
 };
 
 // Генерация плана ответа
-const generateResponsePlan = async (userQuestion: string, selectedModel: string, abortSignal?: AbortSignal): Promise<PlanStep[]> => {
-  console.log(`📋 Plan Generation | Question: "${userQuestion}" (${userQuestion.length} chars) | Selected: ${selectedModel} → Will use DeepSeek Chat`);
+const generateResponsePlan = async (
+  userQuestion: string,
+  useWebSearch?: boolean,
+  abortSignal?: AbortSignal
+): Promise<PlanStep[]> => {
+  console.log(`📋 Plan Generation | Question: "${userQuestion}" (${userQuestion.length} chars) | Model: ${MODEL}`);
 
   // ✅ Ранний return для простых вопросов - избегаем 60s таймаут и лишний сетевой вызов
   const q = userQuestion.trim().toLowerCase();
+
+  // ВОПРОСЫ ОПРЕДЕЛЕНИЙ НИКОГДА НЕ БЫВАЮТ ПРОСТЫМИ - всегда требуют поиска
+  const isDefinitionQuery = /(что такое|определение|что значит|что означае|значение слова|термин)/i.test(q);
+
   const simple =
     userQuestion.trim().length <= 80 &&
     !q.includes('план') &&
     !q.includes('анализ') &&
     !q.includes('сравн') &&
-    !q.includes('стратег');
+    !q.includes('стратег') &&
+    !isDefinitionQuery; // Определения никогда не простые
 
-  if (simple) {
+  // КРИТИЧНО: Если пользователь выбрал "Использовать интернет" - игнорируем эвристику simple query
+  if (simple && !useWebSearch) {
     console.log('🟢 Plan Generation Skipped | Simple query detected, returning empty plan');
     return [];
   }
@@ -2533,10 +2906,16 @@ const generateResponsePlan = async (userQuestion: string, selectedModel: string,
 2. РАЗДЕЛИ НА 3-5 ОСНОВНЫХ ШАГОВ
 3. ДЛЯ КАЖДОГО ШАГА ДОБАВЬ 2-3 ПОИСКОВЫХ ЗАПРОСА
 
+СПЕЦИАЛЬНЫЕ ПРАВИЛА ДЛЯ ВОПРОСОВ ОПРЕДЕЛЕНИЙ:
+- Если вопрос начинается с "что такое", "определение", "что значит" - это запрос на определение термина
+- Для определений: ищи в словарях, энциклопедиях, официальных источниках
+- Добавляй год ТОЛЬКО если термин связан с актуальными технологиями или трендами
+- Для классических терминов и определений год НЕ НУЖЕН
+
 ПРАВИЛА:
 - Шаги в логической последовательности
-- Поисковые запросы заканчиваются на "2025" или "2025 год"
-- Используй конкретные запросы для получения актуальной информации
+- Поисковые запросы заканчиваются на "2025" или "2025 год" ТОЛЬКО для актуальных данных
+- Используй конкретные запросы для получения точной информации
 
 ФОРМАТ ОТВЕТА - ТОЛЬКО JSON:
 [
@@ -2577,7 +2956,7 @@ const generateResponsePlan = async (userQuestion: string, selectedModel: string,
 ]
 `;
 
-  console.log(`🚀 Plan Generation Request | Model: ${actualModel} | Prompt length: ${planPrompt.length} chars | Stream: false`);
+  console.log(`🚀 Plan Generation Request | Model: ${MODEL} | Prompt length: ${planPrompt.length} chars | Stream: false`);
 
   // Создаем AbortController для комбинации внешнего сигнала и таймаута
   const controller = new AbortController();
@@ -2593,7 +2972,7 @@ const generateResponsePlan = async (userQuestion: string, selectedModel: string,
   abortSignal?.addEventListener('abort', abortHandler);
 
   const timeoutId = setTimeout(() => {
-    console.warn(`⏱️ Plan Generation Timeout | Model: ${actualModel} | Timeout: ${timeoutMs}ms exceeded`);
+    console.warn(`⏱️ Plan Generation Timeout | Model: ${MODEL} | Timeout: ${timeoutMs}ms exceeded`);
     controller.abort();
   }, timeoutMs);
 
@@ -2609,10 +2988,9 @@ const generateResponsePlan = async (userQuestion: string, selectedModel: string,
           { role: 'system', content: 'Ты - помощник, который создает планы ответов. Всегда отвечай только в формате JSON.' },
           { role: 'user', content: planPrompt }
         ],
-        model: actualModel,
+        model: MODEL,
         stream: false,
-        max_tokens: modelParams.max_tokens,
-        temperature: modelParams.temperature,
+        ...PLAN_PARAMS,
       }),
     });
 
@@ -2757,13 +3135,12 @@ const generateResponsePlan = async (userQuestion: string, selectedModel: string,
 // Выполнение одного этапа плана
 const executePlanStep = async (
   messages: Message[],
-  selectedModel: string,
   onChunk?: (chunk: string) => void,
   abortSignal?: AbortSignal
 ): Promise<string> => {
-  // Конвертируем выбранную модель в реальную модель DeepSeek
-  const actualModel = getActualModel(selectedModel);
-  const modelParams = getModelParams(selectedModel);
+  // Используем единую модель проекта
+  const actualModel = MODEL;
+  const modelParams = MODEL_PARAMS;
 
   const stepMessage = messages[messages.length - 1];
   const stepContent = stepMessage.content.toLowerCase();
@@ -2961,7 +3338,7 @@ ${searchContext}
     });
 
     // GPT-5.1 не поддерживает streaming
-    const useStreaming = actualModel !== 'gpt-5.1';
+    const useStreaming = true;
 
     const requestOptions: RequestInit = {
       method: 'POST',

@@ -89,4 +89,4 @@ playwright-report/
 
 # Local development
 public/ngrok-test.html
-/tmp/
+/tmp/cookies.txt

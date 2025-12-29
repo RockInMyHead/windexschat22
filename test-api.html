@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>API Test</title>
+</head>
+<body>
+    <h1>API Test</h1>
+    <button onclick="testMe()">Test /api/me</button>
+    <button onclick="testCurrent()">Test /api/users/current</button>
+    <button onclick="testHealth()">Test /api/health</button>
+    <div id="results"></div>
+
+    <script>
+        function log(message) {
+            const results = document.getElementById('results');
+            results.innerHTML += '<div>' + new Date().toISOString() + ': ' + message + '</div>';
+            console.log(message);
+        }
+
+        async function testMe() {
+            try {
+                log('Testing /api/me...');
+                const response = await fetch('http://localhost:80/api/me');
+                const text = await response.text();
+                log('Response: ' + response.status + ' ' + response.statusText);
+                log('Body: ' + text);
+                log('Headers: ' + JSON.stringify(Object.fromEntries(response.headers.entries())));
+            } catch (error) {
+                log('Error: ' + error.message);
+            }
+        }
+
+        async function testCurrent() {
+            try {
+                log('Testing /api/users/current...');
+                const response = await fetch('http://localhost:80/api/users/current', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email: 'test@example.com', name: 'Test' })
+                });
+                const text = await response.text();
+                log('Response: ' + response.status + ' ' + response.statusText);
+                log('Body: ' + text);
+            } catch (error) {
+                log('Error: ' + error.message);
+            }
+        }
+
+        async function testHealth() {
+            try {
+                log('Testing /api/health...');
+                const response = await fetch('http://localhost:80/api/health');
+                const text = await response.text();
+                log('Response: ' + response.status + ' ' + response.statusText);
+                log('Body: ' + text);
+            } catch (error) {
+                log('Error: ' + error.message);
+            }
+        }
+    </script>
+</body>
+</html>

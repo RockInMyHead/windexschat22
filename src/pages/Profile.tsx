@@ -315,7 +315,7 @@ const Profile = () => {
                     <span className="text-sm text-muted-foreground">₽399/месяц</span>
                   </div>
                   <p className="text-sm text-muted-foreground mb-3">
-                    Полный доступ ко всем функциям и моделям GPT-4
+                    Полный доступ ко всем функциям и моделям DeepSeek Reasoner
                   </p>
                   <Button
                     size="sm"

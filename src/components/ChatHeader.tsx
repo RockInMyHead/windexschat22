@@ -16,16 +16,14 @@ const ChatHeader = ({
   internetEnabled,
   onToggleInternet,
   userBalance,
-  balanceLoading = false,
-  usdToRubRate = 85
+  balanceLoading = false
 }: ChatHeaderProps) => {
   const navigate = useNavigate();
 
   // Форматируем баланс в рублях
   const formatBalance = (balance: number | null) => {
     if (balance === null) return "0 ₽";
-    const rubBalance = balance * usdToRubRate;
-    return `${rubBalance.toFixed(2)} ₽`;
+    return `${balance.toFixed(2)} ₽`;
   };
 
   return (

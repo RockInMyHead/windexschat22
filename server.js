@@ -2,7 +2,27 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { ProxyAgent } from 'undici';
+import dns from 'node:dns/promises';
 import { DatabaseService } from './src/lib/database.js';
+
+// Единая модель проекта (1 источник правды)
+const MODEL = "deepseek-chat";
+
+// Параметры для разных типов запросов
+const MODEL_PARAMS = {
+  max_tokens: 12000,
+  temperature: 0.7,
+};
+
+const PLAN_PARAMS = {
+  max_tokens: 1200,
+  temperature: 0.2,
+};
+
+const ARTIFACT_PARAMS = {
+  max_tokens: 4000,
+  temperature: 0.2,
+};
 
 // Явно инициализируем базу данных при запуске сервера
 console.log('🗄️ Initializing database service...');
@@ -16,12 +36,102 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import Database from 'better-sqlite3';
 import JSON5 from 'json5';
+import session from "express-session";
+import SQLiteStoreFactory from "connect-sqlite3";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Decision system prompt
+// Helper: детектор запросов, требующих свежих данных
+function requiresFreshData(text = "") {
+  return /погод|weather|курс|price|цена|новост|today|сегодня|сейчас|актуальн/i.test(text);
+}
+
+// Helper: детектор криптовалютных запросов
+function isCryptoQuery(text = "") {
+  const q = text.toLowerCase();
+  return (
+    /\b(btc|eth|sol|bnb|xrp|ada|doge|matic|link|uni|avax|dot)\b/i.test(q) ||
+    /\b(usdt|usd|eur|rub|btc|eth)\b/i.test(q) ||
+    /\b(курс|цена|стоимость|цена|price|rate|cost)\b/i.test(q) ||
+    q.includes("/")
+  );
+}
+
+// Helper: извлечение крипто-пары из запроса
+function extractCryptoPair(text = "") {
+  const q = text.toUpperCase().trim();
+
+  // Прямые паттерны: SOL/USDT, BTC USD, ETH-EUR
+  const directMatch = q.match(/([A-Z]{2,10})[\/\s-]([A-Z]{2,10})/);
+  if (directMatch) {
+    return {
+      base: directMatch[1],   // SOL
+      quote: directMatch[2]   // USDT
+    };
+  }
+
+  // Обратные паттерны: курс SOL, цена BTC, SOL цена
+  const tokenMatch = q.match(/\b(BTC|ETH|SOL|BNB|XRP|ADA|DOGE|DOT|AVAX|LINK|UNI|CAKE)\b/i);
+  if (tokenMatch) {
+    const base = tokenMatch[1].toUpperCase();
+    let quote = 'USD'; // по умолчанию
+
+    // Проверяем валюту в запросе
+    if (/\b(USDT|USD)\b/i.test(q)) quote = 'USDT';
+    else if (/\b(EUR)\b/i.test(q)) quote = 'EUR';
+    else if (/\b(RUB|руб)\b/i.test(q)) quote = 'RUB';
+
+    return { base, quote };
+  }
+
+  return null;
+}
+
+// Helper: маппинг токенов на CoinGecko ID
+function getCoinGeckoId(token) {
+  const mapping = {
+    'BTC': 'bitcoin',
+    'ETH': 'ethereum',
+    'SOL': 'solana',
+    'BNB': 'binancecoin',
+    'XRP': 'ripple',
+    'ADA': 'cardano',
+    'DOGE': 'dogecoin',
+    'DOT': 'polkadot',
+    'AVAX': 'avalanche-2',
+    'LINK': 'chainlink',
+    'UNI': 'uniswap',
+    'CAKE': 'pancakeswap-token',
+    'MATIC': 'matic-network'
+  };
+
+  return mapping[token.toUpperCase()] || null;
+}
+
+const DECISION_SYSTEM_PROMPT = `Ты — WindexsAI.
+
+У тебя есть возможность запросить инструмент web_search,
+НО ты не ходишь в интернет напрямую.
+
+ПРАВИЛА:
+1. Если вопрос требует АКТУАЛЬНЫХ данных (погода, курсы, новости, события, цены) —
+   ты ОБЯЗАН указать need_web = true.
+2. Если интернет не нужен — need_web = false.
+3. Никогда не говори, что у тебя нет доступа к интернету.
+4. Отвечай ТОЛЬКО валидным JSON строго в формате:
+
+{
+  "need_web": boolean,
+  "query": string (если need_web = true),
+  "reason": string
+}`;
+
 const app = express();
 const PORT = process.env.PORT || 1062;
+
+const SQLiteStore = SQLiteStoreFactory(session);
 
 // Локальная БД для prepared statements
 const DB_PATH = path.join(process.cwd(), 'windexs_chat.db');
@@ -30,15 +140,55 @@ const checkSessionOwnerStmt = db.prepare(`
   SELECT 1 FROM chat_sessions WHERE id = ? AND user_id = ?
 `);
 
-// Middleware для проверки аутентификации
-function requireUser(req, res, next) {
-  const userId = Number(req.header("x-user-id"));
-  if (!Number.isFinite(userId) || userId <= 0) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
+// Настройка trust proxy для reverse proxy
+app.set("trust proxy", 1);
+
+// CORS настройки с credentials для сессий
+app.use(cors({
+  origin: [
+    "https://ai.windexs.ru",
+    "https://www.ai.windexs.ru",
+    "http://ai.windexs.ru",
+    "http://www.ai.windexs.ru",
+    "http://127.0.0.1:8081",
+    "https://cute-elliot-distinctively.ngrok-free.dev", // ← ОБЯЗАТЕЛЬНО добавить ваш ngrok
+  ],
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "Accept"], // x-user-id больше не нужен
+}));
+
+// Session middleware
+const isProd = process.env.NODE_ENV === "production";
+
+app.use(session({
+  name: "sid",
+  secret: process.env.SESSION_SECRET || "dev_secret_change_me",
+  resave: false,
+  saveUninitialized: false,
+  store: new SQLiteStore({
+    db: "http_sessions.sqlite",
+    dir: path.join(process.cwd(), "db"),
+  }),
+  cookie: {
+    httpOnly: true,
+    secure: isProd,  // true в prod, false в dev (для localhost)
+    sameSite: isProd ? "none" : "lax",  // none для кросс-ориджин, lax для same-origin
+    maxAge: 1000 * 60 * 60 * 24 * 7,
+  },
+}));
+
+// Middleware для проверки аутентификации через сессии
+function requireAuth(req, res, next) {
+  if (req.method === "OPTIONS") return next(); // не блокируем preflight
+
+  const userId = req.session?.userId;
+  if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
   req.user = { id: userId };
   next();
 }
+
 
 // Стоимость токенов за 1M токенов в долларах (DeepSeek models only)
 const getTokenPrices = (model) => {
@@ -48,8 +198,12 @@ const getTokenPrices = (model) => {
 
   // Распределяем стоимость между input и output (примерно 30% на input, 70% на output)
   const prices = {
+    // DeepSeek models
     'deepseek-chat': { input: fixedCostUSD * 0.3, output: fixedCostUSD * 0.7 },
-    'deepseek-reasoner': { input: fixedCostUSD * 0.3, output: fixedCostUSD * 0.7 }
+    'deepseek-reasoner': { input: fixedCostUSD * 0.3, output: fixedCostUSD * 0.7 },
+    // OpenAI models
+    'gpt-3.5-turbo': { input: fixedCostUSD * 0.3, output: fixedCostUSD * 0.7 },
+    'gpt-4': { input: fixedCostUSD * 0.3, output: fixedCostUSD * 0.7 }
   };
   return prices[model] || prices['deepseek-chat'];
 };
@@ -121,20 +275,6 @@ const proxyAgent = PROXY_URL ? new ProxyAgent({
   uri: PROXY_URL
 }) : null;
 
-// Middleware
-app.use(cors({
-  origin: [
-    'https://ai.windexs.ru',
-    'https://www.ai.windexs.ru',
-    'http://ai.windexs.ru',
-    'http://www.ai.windexs.ru',
-    'https://ai.windexs.ru',
-    'http://127.0.0.1:8081'
-  ],
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
-}));
 // Увеличиваем лимит размера тела запроса до 10MB для больших контекстов
 app.use(express.json({ limit: '10mb' }));
 
@@ -144,7 +284,7 @@ app.use('/api/market', marketRouter);
 // API Routes
 
 // Создать новую сессию чата
-app.post('/api/sessions', requireUser, (req, res) => {
+app.post('/api/sessions', requireAuth, (req, res) => {
   try {
     const { title = 'Новый чат' } = req.body;
     console.log(`📝 POST /api/sessions | User: ${req.user.id} | Title: "${title}" | Origin: ${req.headers.origin || 'none'}`);
@@ -158,7 +298,7 @@ app.post('/api/sessions', requireUser, (req, res) => {
 });
 
 // Получить все сессии
-app.get('/api/sessions', requireUser, (req, res) => {
+app.get('/api/sessions', requireAuth, (req, res) => {
   try {
     const sessions = DatabaseService.getAllSessions(req.user.id);
     console.log(`📋 GET /api/sessions | User: ${req.user.id} | Origin: ${req.headers.origin || 'none'} | Returning ${sessions.length} session(s)`);
@@ -170,7 +310,7 @@ app.get('/api/sessions', requireUser, (req, res) => {
 });
 
 // Получить сообщения сессии
-app.get('/api/sessions/:sessionId/messages', requireUser, (req, res) => {
+app.get('/api/sessions/:sessionId/messages', requireAuth, (req, res) => {
   try {
     const { sessionId } = req.params;
     const sessionIdNum = parseInt(sessionId);
@@ -195,22 +335,41 @@ app.get('/api/sessions/:sessionId/messages', requireUser, (req, res) => {
 });
 
 // Сохранить сообщение
-app.post('/api/messages', requireUser, (req, res) => {
+app.post("/api/messages", requireAuth, (req, res) => {
   try {
-    const { sessionId, role, content, artifactId } = req.body;
+    const { sessionId, role, content, artifactId } = req.body || {};
 
-    if (!sessionId || !role || !content) {
-      return res.status(400).json({ error: 'Missing required fields' });
+    const missing = [];
+    if (sessionId == null) missing.push("sessionId");
+    if (!role) missing.push("role");
+    if (!content) missing.push("content");
+
+    if (missing.length) {
+      console.warn("❌ /api/messages missing fields:", { missing, body: req.body });
+      return res.status(400).json({ error: "Missing required fields", missing });
     }
 
-    const messageId = DatabaseService.saveMessage(sessionId, req.user.id, role, content, artifactId || null);
-    res.json({ messageId });
-  } catch (error) {
-    if (error?.code === "SESSION_NOT_FOUND") {
-      return res.status(404).json({ error: "Session not found" });
+    const sessionIdNum = Number(sessionId);
+    if (!Number.isFinite(sessionIdNum) || sessionIdNum <= 0) {
+      return res.status(400).json({ error: "Invalid sessionId" });
     }
-    console.error('Error saving message:', error);
-    res.status(500).json({ error: 'Failed to save message' });
+
+    // проверка владельца (как в GET /sessions/:id/messages)
+    const ok = checkSessionOwnerStmt.get(sessionIdNum, req.user.id);
+    if (!ok) return res.status(404).json({ error: "Session not found" });
+
+    const messageId = DatabaseService.saveMessage(
+      sessionIdNum,
+      req.user.id,
+      role,
+      content,
+      artifactId || null
+    );
+
+    return res.json({ messageId });
+  } catch (e) {
+    console.error("❌ Error saving message:", e?.stack || e);
+    return res.status(500).json({ error: "Failed to save message" });
   }
 });
 
@@ -242,6 +401,20 @@ app.delete('/api/sessions/:sessionId', (req, res) => {
     console.error('Error deleting session:', error);
     res.status(500).json({ error: 'Failed to delete session' });
   }
+});
+
+// === Auth API ===
+
+// Получить информацию о текущем пользователе
+app.get('/api/me', requireAuth, (req, res) => {
+  const user = DatabaseService.getUserById(req.user.id);
+  if (!user) return res.status(401).json({ error: "Unauthorized" });
+  res.json(user);
+});
+
+// Выйти из системы
+app.post('/api/logout', (req, res) => {
+  req.session.destroy(() => res.json({ ok: true }));
 });
 
 // === Wallet API ===
@@ -389,7 +562,19 @@ app.post('/api/users/current', (req, res) => {
     };
 
     console.log('✅ User response prepared:', responseUser.id, responseUser.email);
-    res.json(responseUser);
+
+    // Сохраняем userId в сессии
+    req.session.userId = user.id;
+
+    try {
+      // Синхронное сохранение сессии (express-session поддерживает это)
+      req.session.save();
+      console.log('✅ Session saved for user:', user.id);
+      res.json(responseUser);
+    } catch (err) {
+      console.error("❌ session save failed:", err);
+      return res.status(500).json({ error: "Failed to persist session" });
+    }
   } catch (error) {
     console.error('❌ Get current user error:', error);
     console.error('❌ Error stack:', error.stack);
@@ -702,8 +887,8 @@ app.post('/api/artifacts/generate', async (req, res) => {
       return res.status(500).json({ error: 'Invalid artifact structure' });
     }
 
-    // Проверка обязательных файлов
-    const requiredFiles = ['/index.html', '/src/App.tsx', '/src/main.tsx', '/src/index.css'];
+    // Проверка обязательных файлов для vanilla HTML/CSS/JS сайтов
+    const requiredFiles = ['/index.html', '/styles.css', '/app.js'];
     const missingFiles = requiredFiles.filter(file => !parsedData.artifact.files[file]);
 
     if (missingFiles.length > 0) {
@@ -743,8 +928,8 @@ app.post('/api/artifacts', (req, res) => {
       return res.status(400).json({ error: 'Files must be a non-empty object' });
     }
 
-    // Проверка обязательных файлов
-    const requiredFiles = ['/index.html', '/src/App.tsx', '/src/main.tsx', '/src/index.css'];
+    // Проверка обязательных файлов для vanilla HTML/CSS/JS сайтов
+    const requiredFiles = ['/index.html', '/styles.css', '/app.js'];
     const missingFiles = requiredFiles.filter(file => !files[file]);
     if (missingFiles.length > 0) {
       return res.status(400).json({ 
@@ -776,6 +961,436 @@ app.post('/api/artifacts', (req, res) => {
   } catch (error) {
     console.error('Error creating artifact:', error);
     res.status(500).json({ error: 'Failed to create artifact' });
+  }
+});
+
+// Редактировать артефакт (правка существующего сайта)
+app.post("/api/artifacts/:id/edit", requireAuth, async (req, res) => {
+  try {
+    const artifactId = Number(req.params.id);
+    const {
+      instruction,
+      model = "lite",
+      requestId,
+      max_tokens,
+      temperature,
+      response_format,
+    } = req.body || {};
+
+    if (!Number.isFinite(artifactId) || artifactId <= 0) {
+      return res.status(400).json({ error: "Invalid artifactId" });
+    }
+    if (!instruction || !String(instruction).trim()) {
+      return res.status(400).json({ error: "instruction required" });
+    }
+
+    // --- helpers ------------------------------------------------------------
+
+    const normalizeFiles = (art) => {
+      const indexHtml = art.files?.["/index.html"] ?? art.files?.["index.html"] ?? "";
+      const stylesCss = art.files?.["/styles.css"] ?? art.files?.["styles.css"] ?? "";
+      const appJs = art.files?.["/app.js"] ?? art.files?.["app.js"] ?? "";
+      return {
+        "/index.html": String(indexHtml),
+        "/styles.css": String(stylesCss),
+        "/app.js": String(appJs),
+      };
+    };
+
+    const stripCssImports = (js) =>
+      String(js)
+        .split("\n")
+        .filter((line) => !/^\s*import\s+["'][^"']+\.css["']\s*;?\s*$/.test(line))
+        .join("\n");
+
+    const validateBasics = (files) => {
+      const html = files["/index.html"] || "";
+      if (!html.includes('id="app"') && !html.includes("id='app'")) {
+        throw new Error("index.html must contain <div id=\"app\"></div>");
+      }
+      // не железно, но полезно
+      // допускаем любые пути, но желательно /styles.css и /app.js
+      return true;
+    };
+
+    // Upsert CSS var inside :root {...}
+    const setCssVar = (css, varName, value) => {
+      let out = String(css);
+
+      const rootRe = /:root\s*\{([\s\S]*?)\}/m;
+      const m = out.match(rootRe);
+
+      if (!m) {
+        // добавляем :root в начало файла
+        const block =
+          `:root{\n  ${varName}: ${value};\n}\n\n`;
+        return block + out;
+      }
+
+      const body = m[1];
+      const varRe = new RegExp(`(^|\\n)\\s*${escapeRegExp(varName)}\\s*:\\s*[^;]+;?`, "m");
+
+      let newBody;
+      if (varRe.test(body)) {
+        newBody = body.replace(varRe, `$1  ${varName}: ${value};`);
+      } else {
+        // вставим перед закрывающей }
+        newBody = body.trimEnd() + `\n  ${varName}: ${value};\n`;
+      }
+
+      out = out.replace(rootRe, `:root{${newBody}}`);
+      return out;
+    };
+
+    // Upsert property inside selector block (very lightweight regex approach)
+    const upsertCssProp = (css, selector, prop, value) => {
+      let out = String(css);
+      const selRe = new RegExp(`${escapeRegExp(selector)}\\s*\\{([\\s\\S]*?)\\}`, "m");
+      const m = out.match(selRe);
+
+      if (!m) {
+        // добавим правило в конец
+        out = out.trimEnd() + `\n\n${selector}{\n  ${prop}: ${value};\n}\n`;
+        return out;
+      }
+
+      const body = m[1];
+      const propRe = new RegExp(`(^|\\n)\\s*${escapeRegExp(prop)}\\s*:\\s*[^;]+;?`, "m");
+      let newBody;
+      if (propRe.test(body)) {
+        newBody = body.replace(propRe, `$1  ${prop}: ${value};`);
+      } else {
+        newBody = body.trimEnd() + `\n  ${prop}: ${value};\n`;
+      }
+
+      out = out.replace(selRe, `${selector}{${newBody}}`);
+      return out;
+    };
+
+    function escapeRegExp(s) {
+      return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+
+    const applyEdits = (files, edits) => {
+      const out = { ...files };
+
+      const normPath = (f) => {
+        if (f === "index.html") return "/index.html";
+        if (f === "styles.css") return "/styles.css";
+        if (f === "app.js") return "/app.js";
+        if (f === "/index.html" || f === "/styles.css" || f === "/app.js") return f;
+        // запрещаем любые другие файлы
+        throw new Error(`Unsupported file: ${f}`);
+      };
+
+      for (const e of edits) {
+        const path = normPath(e.file);
+        let src = String(out[path] ?? "");
+
+        switch (e.op) {
+          case "replace_between": {
+            const start = String(e.start ?? "");
+            const end = String(e.end ?? "");
+            if (!start || !end) {
+              console.warn(`⚠️ replace_between: Missing start/end for ${path}, skipping`);
+              break;
+            }
+            const i = src.indexOf(start);
+            const j = src.indexOf(end);
+            if (i < 0 || j < 0 || j <= i) {
+              console.warn(`⚠️ replace_between: Anchors not found for ${path}: "${start}" ... "${end}", skipping`);
+              break; // Не выбрасываем ошибку, просто пропускаем
+            }
+            const before = src.slice(0, i + start.length);
+            const after = src.slice(j);
+            src = `${before}\n${String(e.text ?? "")}\n${after}`;
+            break;
+          }
+
+          case "replace_first": {
+            const match = String(e.match ?? "");
+            if (!match) {
+              console.warn(`⚠️ replace_first: Missing match for ${path}, skipping`);
+              break;
+            }
+            const k = src.indexOf(match);
+            if (k < 0) {
+              console.warn(`⚠️ replace_first: Match "${match}" not found in ${path}, skipping`);
+              break;
+            }
+            src = src.replace(match, String(e.text ?? ""));
+            break;
+          }
+
+          case "replace_all": {
+            const match = String(e.match ?? "");
+            if (!match) throw new Error("replace_all requires match");
+            if (!src.includes(match)) {
+              console.warn(`⚠️ replace_all: Match "${match}" not found in ${path}, skipping`);
+              break; // Не выбрасываем ошибку, просто пропускаем
+            }
+            src = src.split(match).join(String(e.text ?? ""));
+            break;
+          }
+
+          case "replace_regex": {
+            const pattern = String(e.pattern ?? "");
+            const flags = String(e.flags ?? "g");
+            if (!pattern) throw new Error("replace_regex requires pattern");
+
+            try {
+              const regex = new RegExp(pattern, flags);
+              if (!regex.test(src)) {
+                console.warn(`⚠️ replace_regex: Pattern "${pattern}" not found in ${path}, skipping`);
+                break;
+              }
+              src = src.replace(regex, String(e.text ?? ""));
+            } catch (regexError) {
+              console.warn(`⚠️ replace_regex: Invalid regex "${pattern}": ${regexError.message}, skipping`);
+            }
+            break;
+          }
+
+          case "insert_after": {
+            const anchor = String(e.anchor ?? "");
+            if (!anchor) {
+              console.warn(`⚠️ insert_after: Missing anchor for ${path}, skipping`);
+              break;
+            }
+            const k = src.indexOf(anchor);
+            if (k < 0) {
+              console.warn(`⚠️ insert_after: Anchor "${anchor}" not found in ${path}, skipping`);
+              break;
+            }
+            src = src.slice(0, k + anchor.length) + "\n" + String(e.text ?? "") + "\n" + src.slice(k + anchor.length);
+            break;
+          }
+
+          case "insert_before": {
+            const anchor = String(e.anchor ?? "");
+            if (!anchor) {
+              console.warn(`⚠️ insert_before: Missing anchor for ${path}, skipping`);
+              break;
+            }
+            const k = src.indexOf(anchor);
+            if (k < 0) {
+              console.warn(`⚠️ insert_before: Anchor "${anchor}" not found in ${path}, skipping`);
+              break;
+            }
+            src = src.slice(0, k) + String(e.text ?? "") + "\n" + src.slice(k);
+            break;
+          }
+
+          // --- CSS smart ops (минимальные правки) ----------------------------
+          case "css_set_var": {
+            if (path !== "/styles.css") throw new Error("css_set_var only for styles.css");
+            src = setCssVar(src, String(e.var ?? ""), String(e.value ?? ""));
+            break;
+          }
+
+          case "css_upsert_prop": {
+            if (path !== "/styles.css") throw new Error("css_upsert_prop only for styles.css");
+            src = upsertCssProp(src, String(e.selector ?? "body"), String(e.prop ?? ""), String(e.value ?? ""));
+            break;
+          }
+
+          default:
+            throw new Error(`Unsupported op: ${e.op}`);
+        }
+
+        out[path] = src;
+      }
+
+      // пост-санитизация
+      out["/app.js"] = stripCssImports(out["/app.js"]);
+      return out;
+    };
+
+    // --- data load + ownership ---------------------------------------------
+
+    const art = DatabaseService.getArtifact(artifactId);
+    if (!art) return res.status(404).json({ error: "artifact not found" });
+
+    const ok = db.prepare(`
+      SELECT 1
+      FROM artifacts a
+      JOIN chat_sessions s ON s.id = a.session_id
+      WHERE a.id = ? AND s.user_id = ?
+    `).get(artifactId, req.user.id);
+    if (!ok) return res.status(403).json({ error: "forbidden" });
+
+    const currentFiles = normalizeFiles(art);
+
+    // --- prompts: PATCH contract -------------------------------------------
+
+    const systemPrompt = `
+Ты — senior product front-end инженер.
+
+Правь существующий статический сайт строго на HTML/CSS/JS.
+
+Это ПОЛНОЦЕННОЕ веб-приложение продуктового уровня с бизнес-логикой, состояниями и пользовательскими сценариями.
+
+КРИТИЧНО:
+- Верни ТОЛЬКО валидный JSON (без markdown/текста вокруг), начни с { и закончи }.
+- НЕ возвращай полностью файлы.
+- Верни только список точечных правок edits[] (минимальные изменения).
+- Разрешены только файлы: index.html, styles.css, app.js.
+- Запрещено: React/Vite/TS/JSX, npm, любые CDN, любые import/export, network-запросы.
+
+Формат ответа:
+{
+  "assistantText": "кратко что изменено",
+  "title": "опционально",
+  "edits": [
+    {
+      "file": "styles.css" | "index.html" | "app.js",
+      "op": "replace_between" | "replace_first" | "replace_all" | "replace_regex" | "insert_after" | "insert_before" | "css_set_var" | "css_upsert_prop",
+      // поля зависят от op
+    }
+  ]
+}
+
+Правила:
+- Изменения должны сохранять продуктовую логику и бизнес-правила
+- Если задача про фон/цвета/темы — предпочитай ops css_set_var и css_upsert_prop, а не replace_all.
+- css_set_var: { "file":"styles.css","op":"css_set_var","var":"--bg","value":"#ffc0cb" }
+- css_upsert_prop: { "file":"styles.css","op":"css_upsert_prop","selector":"body","prop":"background","value":"var(--bg)" }
+
+- Для текстовых изменений предпочитай replace_all или replace_regex вместо replace_between (более надежно).
+- replace_all: { "file":"index.html","op":"replace_all","match":"старый текст","text":"новый текст" }
+- replace_regex: { "file":"index.html","op":"replace_regex","pattern":"регулярка","flags":"g","text":"новый текст" }
+
+- Избегай replace_between с одинаковыми якорями - это не имеет смысла.
+- Если не уверен в точном тексте - используй replace_regex с более гибкими паттернами.
+
+Старайся менять только то, что нужно, сохраняя бизнес-логику и пользовательские сценарии.
+`.trim();
+
+    const userPrompt = `
+ТЕКУЩИЙ КОД:
+
+index.html:
+${currentFiles["/index.html"]}
+
+styles.css:
+${currentFiles["/styles.css"]}
+
+app.js:
+${currentFiles["/app.js"]}
+
+ЗАДАНИЕ ПОЛЬЗОВАТЕЛЯ:
+${instruction}
+
+Верни JSON строго по формату PATCH (edits[]).
+`.trim();
+
+    // --- upstream call ------------------------------------------------------
+
+    const deepseekKey = process.env.DEEPSEEK_API_KEY;
+    if (!deepseekKey) return res.status(500).json({ error: "DEEPSEEK_API_KEY is missing" });
+
+    const actualModel =
+      model === "pro" ? "deepseek-reasoner" :
+      model === "lite" ? "deepseek-chat" :
+      (typeof model === "string" && model.startsWith("deepseek-")) ? model :
+      "deepseek-chat";
+
+    const upstreamBody = {
+      model: actualModel,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      stream: false,
+      temperature: typeof temperature === "number" ? temperature : 0.2,
+      // PATCH-ответ может быть длинным при сложных изменениях
+      max_tokens: typeof max_tokens === "number" ? max_tokens : 4000,
+      ...(response_format && Object.keys(response_format).length > 0 ? { response_format } : {}),
+    };
+
+    const apiUrl = "https://api.deepseek.com/chat/completions";
+    const apiResp = await fetch(apiUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${deepseekKey}` },
+      ...(proxyAgent && { dispatcher: proxyAgent }),
+      body: JSON.stringify(upstreamBody),
+    });
+
+    if (!apiResp.ok) {
+      const t = await apiResp.text().catch(() => "");
+      return res.status(apiResp.status).json({ error: "DEEPSEEK_API_error", details: t });
+    }
+
+    const data = await apiResp.json();
+    const raw = data?.choices?.[0]?.message?.content ?? "";
+
+    // --- parse JSON (как у вас) --------------------------------------------
+
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      const rawStr = String(raw).trim();
+      const startIndex = rawStr.indexOf("{");
+      if (startIndex === -1) {
+        return res.status(502).json({ error: "no_json_found_in_response", rawHead: rawStr.slice(0, 200) });
+      }
+      let braceCount = 0;
+      let endIndex = -1;
+      for (let i = startIndex; i < rawStr.length; i++) {
+        if (rawStr[i] === "{") braceCount++;
+        else if (rawStr[i] === "}") braceCount--;
+        if (braceCount === 0) { endIndex = i; break; }
+      }
+      if (endIndex === -1) {
+        return res.status(502).json({ error: "incomplete_json_braces", rawHead: rawStr.slice(0, 200) });
+      }
+      const jsonCandidate = rawStr.slice(startIndex, endIndex + 1);
+      try {
+        parsed = JSON.parse(jsonCandidate);
+      } catch (secondError) {
+        return res.status(502).json({
+          error: "json_extraction_failed",
+          rawHead: rawStr.slice(0, 200),
+          extractedJson: jsonCandidate.slice(0, 200),
+        });
+      }
+    }
+
+    // --- backward compatible fallback (если модель вдруг вернула старый формат) ----
+
+    // Если пришли full files (artifact.files) — принимаем, но это "перегенерация".
+    // Лучше сигнализировать в логах и постепенно отказаться.
+    let updatedFiles = null;
+
+    if (Array.isArray(parsed?.edits) && parsed.edits.length > 0) {
+      updatedFiles = applyEdits(currentFiles, parsed.edits);
+    } else if (parsed?.artifact?.files) {
+      console.warn("⚠️ Model returned full files instead of PATCH. Consider tightening prompts.");
+      const files = parsed.artifact.files || {};
+      updatedFiles = {
+        "/index.html": files["index.html"] ?? files["/index.html"] ?? currentFiles["/index.html"],
+        "/styles.css": files["styles.css"] ?? files["/styles.css"] ?? currentFiles["/styles.css"],
+        "/app.js": stripCssImports(files["app.js"] ?? files["/app.js"] ?? currentFiles["/app.js"]),
+      };
+    } else {
+      return res.status(502).json({ error: "invalid_patch_response", details: "No edits[] provided" });
+    }
+
+    // validate minimal invariants
+    validateBasics(updatedFiles);
+
+    const newTitle = parsed?.title || parsed?.artifact?.title || art.title || "Website";
+
+    DatabaseService.updateArtifact(artifactId, newTitle, updatedFiles, {});
+
+    return res.json({
+      assistantText: parsed?.assistantText || "Правки применены.",
+      artifact: { title: newTitle, files: updatedFiles, deps: {} },
+    });
+  } catch (e) {
+    console.error("❌ artifact edit failed:", e);
+    return res.status(500).json({ error: "artifact_edit_failed", details: e?.message || String(e) });
   }
 });
 
@@ -837,13 +1452,26 @@ app.put('/api/artifacts/:artifactId', (req, res) => {
 });
 
 // Получить все артефакты сессии
-app.get('/api/sessions/:sessionId/artifacts', (req, res) => {
+app.get('/api/sessions/:sessionId/artifacts', requireAuth, (req, res) => {
   try {
     const { sessionId } = req.params;
-    const artifacts = DatabaseService.getArtifactsBySession(parseInt(sessionId));
+    const sessionIdNum = parseInt(sessionId);
+
+    // Проверяем, что пользователь владеет этой сессией
+    const ok = db.prepare(`
+      SELECT 1
+      FROM chat_sessions
+      WHERE id = ? AND user_id = ?
+    `).get(sessionIdNum, req.user.id);
+
+    if (!ok) {
+      return res.status(403).json({ error: "forbidden" });
+    }
+
+    const artifacts = DatabaseService.getArtifactsBySession(sessionIdNum);
     res.json(artifacts);
   } catch (error) {
-    console.error('Error getting artifacts:', error);
+    console.error('Error getting session artifacts:', error);
     res.status(500).json({ error: 'Failed to get artifacts' });
   }
 });
@@ -861,35 +1489,32 @@ app.get('/api/web-search', async (req, res) => {
     const lowerQuery = query.toLowerCase();
     let searchResults = '';
 
-    // 0. Поиск погоды (приоритетный запрос)
-    const isWeatherQuery = lowerQuery.includes('погод') || lowerQuery.includes('weather') || 
+    // 0. Поиск погоды (приоритетный запрос) - СТРУКТУРИРОВАННЫЙ КОНТРАКТ
+    const isWeatherQuery = lowerQuery.includes('погод') || lowerQuery.includes('weather') ||
         lowerQuery.includes('температур') || lowerQuery.includes('temperature') ||
         lowerQuery.includes('метеоролог') || lowerQuery.includes('метео');
-    
+
     if (isWeatherQuery) {
       try {
         // Извлекаем название города из запроса
-        // Паттерны: "погода в Москве", "погода Москва", "weather in Moscow"
-        let city = 'Moscow'; // По умолчанию Москва
-        let cityName = 'Москве'; // Для отображения
-        
+        let city = null;
+        let cityName = null;
+
         // Улучшенное извлечение города
         const patterns = [
           /(?:погод|weather|температур|temperature).*?(?:в|in)\s+([А-Яа-яЁёA-Za-z\s-]+)/i,
-          /(?:в|in)\s+([А-Яа-яЁёA-Za-z\s-]+)/i,
-          /([А-Яа-яЁё][А-Яа-яЁё\s-]+?)(?:\s|$|,|\.|!|\?)/i
+          /(?:в|in)\s+([А-Яа-яЁёA-Za-z\s-]+)/i
         ];
-        
+
         for (const pattern of patterns) {
           const match = query.match(pattern);
           if (match && match[1]) {
             let extractedCity = match[1].trim();
-            // Убираем лишние слова
             extractedCity = extractedCity.replace(/\s+(сегодня|сейчас|завтра|погода|weather|какая|какой)$/i, '').trim();
-            
+
             if (extractedCity.length > 2) {
               cityName = extractedCity;
-              
+
               // Транслитерация русских названий городов
               const cityMap = {
                 'москва': 'Moscow',
@@ -909,191 +1534,189 @@ app.get('/api/web-search', async (req, res) => {
                 'красноярск': 'Krasnoyarsk',
                 'воронеж': 'Voronezh',
                 'пермь': 'Perm',
-                'волгоград': 'Volgograd'
+                'волгоград': 'Volgograd',
+                'краснодар': 'Krasnodar',
+                'краснодаре': 'Krasnodar'
               };
-              
+
               const cityLower = extractedCity.toLowerCase();
               if (cityMap[cityLower]) {
                 city = cityMap[cityLower];
                 break;
-              } else if (/^[A-Za-z]/.test(extractedCity)) {
-                // Если город на английском, используем как есть
+              }
+
+              // латиница — ок
+              if (/^[A-Za-z]/.test(extractedCity)) {
                 city = extractedCity;
                 break;
               }
+
+              // кириллица — тоже ок (wttr.in переварит URL-encoding)
+              city = extractedCity;
+              break;
             }
           }
         }
-        
+
         console.log('🌤️ Weather query detected, city:', city, 'cityName:', cityName);
-        
-        // Пробуем несколько источников погоды
-        let weatherFound = false;
-        
-        // 1. Пробуем DuckDuckGo Instant Answer (более надежный)
+
+        // СТРУКТУРИРОВАННЫЙ WEATHER_DATA КОНТРАКТ
+        let weatherData = {
+          city: city || 'unknown',
+          as_of: null,
+          temp_c: null,
+          feels_like_c: null,
+          humidity_pct: null,
+          pressure_mm: null,
+          wind_mps: null,
+          clouds_pct: null,
+          source: null
+        };
+
+        let weatherDataResolved = false;
+
+        // 1. Пробуем wttr.in (структурированные данные)
         try {
-          const duckResponse = await fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(`weather ${city}`)}&format=json&no_redirect=1&no_html=1`, {
+          const wttrUrl = `https://wttr.in/${encodeURIComponent(city || 'Moscow')}?format=j1`;
+          const weatherResponse = await fetch(wttrUrl, {
             ...(proxyAgent && { dispatcher: proxyAgent }),
             headers: {
-              'User-Agent': 'Mozilla/5.0 (compatible; WindexsAI/1.0)',
-              'Accept': 'application/json'
+              'User-Agent': 'curl/7.68.0'
             }
           });
-          
-          if (duckResponse.ok) {
-            const duckData = await duckResponse.json();
-            if (duckData.Answer) {
-              searchResults += `🌤️ Погода в ${city}:\n${duckData.Answer}\n\n`;
-              weatherFound = true;
-            }
-            if (duckData.AbstractText && !weatherFound) {
-              searchResults += `${duckData.AbstractText}\n\n`;
-              weatherFound = true;
+
+          if (weatherResponse && weatherResponse.ok) {
+            const weatherJson = await weatherResponse.json();
+        if (weatherJson.current_condition && weatherJson.current_condition[0]) {
+          const current = weatherJson.current_condition[0];
+          // Конвертация давления из mbar в mmHg
+          const pressureMbar = current.pressure ? parseInt(current.pressure, 10) : null;
+          const pressureMm = pressureMbar != null ? Math.round(pressureMbar * 0.75006) : null;
+
+          weatherData = {
+            city: city || 'Moscow',
+            as_of: new Date().toISOString(),
+            temp_c: current.temp_C ? parseInt(current.temp_C) : null,
+            feels_like_c: current.FeelsLikeC ? parseInt(current.FeelsLikeC) : null,
+            humidity_pct: current.humidity ? parseInt(current.humidity) : null,
+            pressure_mm: pressureMm,
+            wind_mps: current.windspeedKmph ? Math.round(parseInt(current.windspeedKmph) * 1000 / 3600) : null,
+            clouds_pct: current.cloudcover ? parseInt(current.cloudcover) : null,
+            source: 'wttr.in'
+          };
+              weatherDataResolved = true;
+              console.log('🌤️ Weather data resolved from wttr.in:', weatherData);
             }
           }
-        } catch (duckError) {
-          console.error('DuckDuckGo weather error:', duckError);
+        } catch (wttrError) {
+          console.error('wttr.in weather error:', wttrError.message || wttrError);
         }
-        
-        // 2. Если DuckDuckGo не дал результатов, пробуем wttr.in
-        if (!weatherFound) {
-          try {
-            // Используем текстовый формат - он более надежный
-            const wttrUrl = `https://wttr.in/${encodeURIComponent(city)}?format=%C+%t+%w+%h+%p&lang=ru`;
-            const weatherResponse = await fetch(wttrUrl, {
-              ...(proxyAgent && { dispatcher: proxyAgent }),
-              headers: {
-                'User-Agent': 'curl/7.68.0'
-              }
-            });
-            
-            if (weatherResponse && weatherResponse.ok) {
-              const weatherText = await weatherResponse.text();
-              if (weatherText && !weatherText.includes('Sorry') && weatherText.trim().length > 0) {
-                // Формат: "Погода Температура Ветер Влажность Давление"
-                const parts = weatherText.trim().split(/\s+/);
-                if (parts.length >= 2) {
-                  searchResults += `🌤️ Погода в ${cityName}:\n\n`;
-                  if (parts[0]) searchResults += `☁️ Условия: ${parts[0]}\n`;
-                  if (parts[1]) searchResults += `🌡️ Температура: ${parts[1]}\n`;
-                  if (parts[2]) searchResults += `💨 Ветер: ${parts[2]}\n`;
-                  if (parts[3]) searchResults += `💧 Влажность: ${parts[3]}\n`;
-                  if (parts[4]) searchResults += `🌡️ Давление: ${parts[4]}\n\n`;
-                  weatherFound = true;
-                }
-              }
-            }
-          } catch (wttrError) {
-            console.error('wttr.in weather error:', wttrError.message || wttrError);
-          }
-        }
-        
-        // Если ничего не найдено, возвращаем базовую информацию
-        if (!searchResults || searchResults.trim() === '') {
-          // Пробуем получить климатические данные из Wikipedia
-          try {
-            const wikiQuery = `Климат ${cityName}`;
-            const wikiResponse = await fetch(`https://ru.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(wikiQuery)}`, {
-              ...(proxyAgent && { dispatcher: proxyAgent })
-            });
-            if (wikiResponse.ok) {
-              const wikiData = await wikiResponse.json();
-              if (wikiData.extract && (wikiData.extract.includes('температур') || wikiData.extract.includes('климат'))) {
-                searchResults = `Климатические данные о ${cityName}:\n${wikiData.extract.substring(0, 400)}...\n\n`;
-                searchResults += `Для получения актуальной погоды рекомендую проверить специализированные погодные сервисы: Яндекс.Погода, Gismeteo или Weather.com.`;
-              } else {
-                searchResults = `Для получения актуальной погоды в ${cityName} рекомендую проверить специализированные погодные сервисы, такие как Яндекс.Погода, Gismeteo или Weather.com.`;
-              }
-            } else {
-              searchResults = `Для получения актуальной погоды в ${cityName} рекомендую проверить специализированные погодные сервисы, такие как Яндекс.Погода, Gismeteo или Weather.com.`;
-            }
-          } catch (wikiError) {
-            console.error('Wikipedia fallback error:', wikiError);
-            searchResults = `Для получения актуальной погоды в ${cityName} рекомендую проверить специализированные погодные сервисы, такие как Яндекс.Погода, Gismeteo или Weather.com.`;
-          }
-        }
+
+    // Форматируем результат
+    if (weatherDataResolved) {
+      searchResults = `WEATHER_DATA
+city=${weatherData.city}
+as_of=${weatherData.as_of}
+temp_c=${weatherData.temp_c ?? 'null'}
+feels_like_c=${weatherData.feels_like_c ?? 'null'}
+humidity_pct=${weatherData.humidity_pct ?? 'null'}
+pressure_mm=${weatherData.pressure_mm ?? 'null'}
+wind_mps=${weatherData.wind_mps ?? 'null'}
+clouds_pct=${weatherData.clouds_pct ?? 'null'}
+source=${weatherData.source}`;
+    } else {
+      // ЕСЛИ WEATHER НЕ ПОЛУЧЕН - ЯВНЫЙ СИГНАЛ
+      searchResults = "[WEATHER_NOT_AVAILABLE]";
+    }
+
       } catch (weatherError) {
         console.error('Weather search error:', weatherError);
+        searchResults = "[WEATHER_NOT_AVAILABLE]";
       }
     }
 
-    // 1. Поиск курсов криптовалют (расширенная логика)
-    // Нормализуем запрос для распознавания разных вариантов написания
-    const normalizedQuery = lowerQuery.replace(/биткойн/gi, 'биткоин');
-    const isCryptoQuery = normalizedQuery.includes('курс') || normalizedQuery.includes('цена') || normalizedQuery.includes('стоимость') ||
-        normalizedQuery.includes('крипто') || normalizedQuery.includes('биткоин') || normalizedQuery.includes('ethereum') ||
-        normalizedQuery.includes('bitcoin') || normalizedQuery.includes('микро') || /\b(mbc|btc|eth)\b/i.test(normalizedQuery);
-
-    // Поиск курсов криптовалют
-    if (isCryptoQuery) {
+    // 1. Поиск курсов криптовалют (СТРОГИЙ CRYPTO_PRICE КОНТРАКТ)
+    if (isCryptoQuery(lowerQuery)) {
       try {
+        const pair = extractCryptoPair(query);
+        console.log('Crypto query detected, extracted pair:', pair, 'from query:', query);
 
-        // Известные криптовалюты
-        let cryptoIds = [];
-        if (normalizedQuery.includes('биткоин') || normalizedQuery.includes('bitcoin') || normalizedQuery.includes('btc') || lowerQuery.includes('btc')) cryptoIds.push('bitcoin');
-        if (normalizedQuery.includes('ethereum') || normalizedQuery.includes('эфир') || normalizedQuery.includes('eth') || lowerQuery.includes('eth')) cryptoIds.push('ethereum');
+        if (pair) {
+          const coinGeckoId = getCoinGeckoId(pair.base);
+          console.log('CoinGecko ID for', pair.base, 'is', coinGeckoId);
 
-        // Специальные случаи
-        if (normalizedQuery.includes('микро') && normalizedQuery.includes('биткоин')) {
-          cryptoIds.push('microbitcoin');
-        }
-        
-        // Если запрос содержит "курс" и не указана конкретная криптовалюта, добавляем биткоин по умолчанию
-        if (cryptoIds.length === 0 && (normalizedQuery.includes('курс') || normalizedQuery.includes('цена')) && (normalizedQuery.includes('крипто') || normalizedQuery.includes('криптовалют'))) {
-          cryptoIds.push('bitcoin');
-        }
+          if (coinGeckoId) {
+            // Определяем валюту для запроса
+            let vsCurrency = 'usd';
+            if (pair.quote === 'USDT') vsCurrency = 'usd'; // USDT = USD в CoinGecko
+            else if (pair.quote === 'EUR') vsCurrency = 'eur';
+            else if (pair.quote === 'RUB') vsCurrency = 'rub';
 
-
-        if (cryptoIds.length > 0) {
-          const cryptoResponse = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${cryptoIds.join(',')}&vs_currencies=usd,rub,eur&include_24hr_change=true&include_market_cap=true&include_24hr_vol=true`, {
-            ...(proxyAgent && { dispatcher: proxyAgent }),
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (compatible; WindexsAI/1.0)',
-              'Accept': 'application/json'
-            }
-          });
-
-          if (cryptoResponse.ok) {
-            const cryptoData = await cryptoResponse.json();
-
-            searchResults += `Курсы и данные криптовалют:\n\n`;
-
-            for (const cryptoId of cryptoIds) {
-              if (cryptoData[cryptoId]) {
-                const data = cryptoData[cryptoId];
-                const name = cryptoId.charAt(0).toUpperCase() + cryptoId.slice(1);
-                searchResults += `${name}:\n`;
-                searchResults += `💰 Цена: $${data.usd} / ₽${data.rub} / €${data.eur}\n`;
-
-                if (data.usd_24h_change !== undefined) {
-                  const change = data.usd_24h_change.toFixed(2);
-                  const changeIcon = parseFloat(change) >= 0 ? '📈' : '📉';
-                  searchResults += `${changeIcon} Изменение 24ч: ${change}%\n`;
+            const cryptoResponse = await fetch(
+              `https://api.coingecko.com/api/v3/simple/price?ids=${coinGeckoId}&vs_currencies=${vsCurrency}&include_24hr_change=true`,
+              {
+                ...(proxyAgent && { dispatcher: proxyAgent }),
+                headers: {
+                  'User-Agent': 'Mozilla/5.0 (compatible; WindexsAI/1.0)',
+                  'Accept': 'application/json'
                 }
-
-                if (data.usd_market_cap) {
-                  searchResults += `📊 Капитализация: $${data.usd_market_cap.toLocaleString()}\n`;
-                }
-
-                if (data.usd_24h_vol) {
-                  searchResults += `📊 Объем 24ч: $${data.usd_24h_vol.toLocaleString()}\n`;
-                }
-
-                searchResults += '\n';
               }
+            );
+
+            if (cryptoResponse.ok) {
+              const cryptoData = await cryptoResponse.json();
+              console.log('CoinGecko response:', cryptoData);
+
+              if (cryptoData[coinGeckoId] && cryptoData[coinGeckoId][vsCurrency] !== undefined) {
+                const data = cryptoData[coinGeckoId];
+                const price = data[vsCurrency];
+                const change24h = data[`${vsCurrency}_24h_change`];
+
+                // СТРОГИЙ CRYPTO_PRICE КОНТРАКТ
+                searchResults = `CRYPTO_PRICE
+pair=${pair.base}/${pair.quote}
+base=${pair.base}
+quote=${pair.quote}
+price=${price}
+currency=${pair.quote === 'USDT' ? 'USD' : pair.quote}
+as_of=${new Date().toISOString()}
+change_24h=${change24h !== undefined ? change24h.toFixed(2) : 'null'}
+source=coingecko
+coingecko_id=${coinGeckoId}`;
+
+                console.log('CRYPTO_PRICE result:', searchResults);
+              } else {
+                console.log('CoinGecko returned data but no price for', coinGeckoId, vsCurrency);
+                searchResults = '[CRYPTO_PRICE_NOT_AVAILABLE]';
+              }
+            } else {
+              console.error('CoinGecko API error:', cryptoResponse.status);
+              searchResults = '[CRYPTO_PRICE_NOT_AVAILABLE]';
             }
+          } else {
+            console.log('Unknown token:', pair.base);
+            searchResults = '[CRYPTO_PRICE_NOT_AVAILABLE]';
           }
+        } else {
+          console.log('Could not extract crypto pair from query:', query);
+          searchResults = '[CRYPTO_PRICE_NOT_AVAILABLE]';
         }
       } catch (cryptoError) {
-        console.error('Crypto API error:', cryptoError);
+        console.error('Crypto search error:', cryptoError);
+        searchResults = '[CRYPTO_PRICE_NOT_AVAILABLE]';
       }
+    }
+
+    // Проверяем результат крипты
+    if (searchResults && searchResults.trim().length < 30) {
+      searchResults = "";
     }
 
     // 2. Все остальные запросы идут через MCP сервер
-    if (!searchResults) {
+    if (!searchResults || !searchResults.trim()) {
       try {
         console.log('🌐 All searches via MCP server for:', query);
-        const mcpResponse = await fetch('https://ai.windexs.ru/api/mcp/search', {
+        const mcpResponse = await fetch('http://localhost:8002/search', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -1166,9 +1789,26 @@ app.get('/api/web-search', async (req, res) => {
       console.error('Wikipedia search error:', wikiError);
     }
 
+    // Добавляем текущую дату сервера в начало результатов
+    const now = new Date();
+    const todayISO = now.toISOString();
+    const todayHuman = now.toLocaleDateString('ru-RU', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    });
+
+    if (searchResults && searchResults.trim()) {
+      searchResults =
+        `АКТУАЛЬНАЯ ДАТА И ВРЕМЯ (SERVER): ${todayHuman} (${todayISO})\n\n` +
+        searchResults;
+    }
 
     // Возвращаем результаты или сообщение об отсутствии результатов
-    const finalResult = searchResults || '[NO_RESULTS_FOUND]';
+    const finalResult =
+      searchResults && searchResults.trim()
+        ? searchResults
+        : '[NO_RESULTS_FOUND]';
 
     res.json({
       query,
@@ -1303,129 +1943,423 @@ async function performWebSearch(query) {
   return 'Информация не найдена.';
 }
 
-// DeepSeek Chat API proxy (обход CORS ограничений)
-app.post('/api/chat', async (req, res) => {
+// DeepSeek Chat API proxy
+app.post("/api/chat", requireAuth, async (req, res) => {
+
+  // Таймаут на апстрим (рекомендуется, чтобы не получать подвисания и "fetch failed")
+  const fetchWithTimeout = async (url, options, timeoutMs = 30000) => {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(new Error("upstream_timeout")), timeoutMs);
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+      clearTimeout(t);
+    }
+  };
+
   try {
-    const lastMessage = req.body?.messages?.[req.body.messages.length - 1];
-    console.log(`🔥 API /chat | Requested: ${req.body?.model || 'lite'} | Stream: ${req.body?.stream || false} | User: ${req.body?.userId || 'none'} | Session: ${req.body?.sessionId || 'none'} | Messages: ${req.body?.messages?.length || 0} | Last message: "${lastMessage?.content?.substring(0, 100) || 'none'}..."`);
-    const { messages, model = 'lite', stream = false, userId, sessionId } = req.body;
+    const {
+      messages,
+      model = "lite",
+      stream = false,
+      sessionId,
+      requestId,
+      requestType = "chat",      // chat | website_generation
+      useWebSearch = false,      // NEW: жёсткий флаг из фронта
+      max_tokens,                // NEW
+      temperature,               // NEW
+      response_format,           // NEW (опционально, если провайдер принимает)
+    } = req.body || {};
 
     if (!messages || !Array.isArray(messages)) {
-      return res.status(400).json({ error: 'Messages array is required' });
+      return res.status(400).json({ error: "Messages array is required" });
     }
 
-    const actualUserId = userId || 1; // Fallback to demo user if no userId provided
+    const actualUserId = req.user.id;
 
-    // Проверяем на market query и добавляем данные
-    const lastUserMessage = messages.filter(m => m.role === 'user').pop();
+    // Decision-pass режим
+    const isDecision = requestType === "decision";
+
+    // Предпроверка баланса (до DeepSeek) - только для чата, не для decision
+    const FEE = 1.0;
+    if (requestType === "chat" && !isDecision) {
+      const bal = DatabaseService.getUserBalance(actualUserId);
+      if (bal < FEE) {
+        return res.status(402).json({
+          error: "Insufficient funds",
+          details: "1 RUB required per chat response",
+          balance: bal,
+        });
+      }
+    }
+
+    const lastMessage = messages?.[messages.length - 1];
+
+    console.log(
+      `🔥 API /chat | Provider: DeepSeek | Requested: ${model} | Stream: ${stream} | User: ${actualUserId} | Session: ${
+        sessionId || "none"
+      } | Messages: ${messages?.length || 0} | Last: "${lastMessage?.content?.substring(0, 100) || "none"}..."`
+    );
+
+    // WEB SEARCH: если useWebSearch=true ИЛИ требуется свежие данные
+    const lastUserMessage = messages.filter(m => m.role === "user").pop();
+    let webSearchResult = null;
+
+    const mustUseWeb =
+      useWebSearch === true ||
+      requiresFreshData(lastUserMessage?.content);
+
+    if (mustUseWeb && lastUserMessage?.content) {
+      console.log('🌐 Web search triggered:', { useWebSearch, hasFreshData: requiresFreshData(lastUserMessage.content) });
+
+      try {
+        const resp = await fetch(`http://localhost/api/web-search?q=` +
+          encodeURIComponent(lastUserMessage.content));
+
+        if (resp.ok) {
+          const data = await resp.json();
+          webSearchResult = data.results;
+        }
+      } catch (e) {
+        console.error('🌐 Web search error:', e);
+        webSearchResult = null;
+      }
+    }
+
+    // Market enrichment
     let enhancedMessages = messages;
 
     if (lastUserMessage && isMarketQuery(lastUserMessage.content)) {
-      console.log('📊 Server: Market query detected, adding market data to context');
+      console.log("📊 Server: Market query detected, adding market data to context");
       const marketSnapshot = await getMarketSnapshot();
 
-      // Добавляем market данные в системное сообщение или создаем новое
-      const systemMessageIndex = messages.findIndex(m => m.role === 'system');
+      const systemMessageIndex = messages.findIndex((m) => m.role === "system");
       if (systemMessageIndex >= 0) {
-        // Добавляем к существующему системному сообщению
         enhancedMessages = [...messages];
         enhancedMessages[systemMessageIndex].content += `\n\nАКТУАЛЬНЫЕ ДАННЫЕ ПО BITCOIN:\n${marketSnapshot}`;
       } else {
-        // Создаем новое системное сообщение
         enhancedMessages = [
           {
-            role: 'system',
-            content: `Ты полезный AI-ассистент. Используй предоставленные актуальные данные по Bitcoin для ответа на вопросы пользователя.\n\nАКТУАЛЬНЫЕ ДАННЫЕ ПО BITCOIN:\n${marketSnapshot}`
+            role: "system",
+            content:
+              `Ты полезный AI-ассистент. Используй предоставленные актуальные данные по Bitcoin для ответа на вопросы пользователя.` +
+              `\n\nАКТУАЛЬНЫЕ ДАННЫЕ ПО BITCOIN:\n${marketSnapshot}`,
           },
-          ...messages
+          ...messages,
         ];
       }
     }
 
-    // Получаем DeepSeek API ключ
-    const apiKey = process.env.DEEPSEEK_API_KEY;
-    if (!apiKey) {
-      return res.status(500).json({ error: 'DeepSeek API key not configured on server' });
+    // Web search enrichment
+    if (webSearchResult) {
+      if (webSearchResult === "[WEATHER_NOT_AVAILABLE]") {
+        // БЛОКИРОВКА ГАЛЛЮЦИНАЦИЙ: НЕТ WEATHER_DATA - НЕТ ПРАВА ОПИСЫВАТЬ ПОГОДУ
+        enhancedMessages = [
+          {
+            role: "system",
+            content:
+              "Сервер не смог получить актуальные погодные данные. " +
+              "ЗАПРЕЩЕНО описывать погоду. " +
+              "Сообщи пользователю о недоступности данных.",
+          },
+          ...enhancedMessages,
+        ];
+      } else if (webSearchResult === "[CRYPTO_PRICE_NOT_AVAILABLE]") {
+        // БЛОКИРОВКА ГАЛЛЮЦИНАЦИЙ: НЕТ CRYPTO_PRICE - НЕТ ПРАВА УКАЗЫВАТЬ ЦЕНУ
+        enhancedMessages = [
+          {
+            role: "system",
+            content:
+              "Сервер не смог получить актуальный курс криптовалюты. " +
+              "ЗАПРЕЩЕНО придумывать цену. " +
+              "Сообщи пользователю о недоступности данных.",
+          },
+          ...enhancedMessages,
+        ];
+      } else if (webSearchResult === "[NO_RESULTS_FOUND]") {
+        enhancedMessages = [
+          {
+            role: "system",
+            content:
+              "СЕРВЕР НЕ СМОГ ПОЛУЧИТЬ АКТУАЛЬНЫЕ ДАННЫЕ.\n" +
+              "ОБЪЯСНИ ПОЛЬЗОВАТЕЛЮ ОБ ЭТОМ КОРРЕКТНО И ДАЙ ПОЛЕЗНЫЕ РЕКОМЕНДАЦИИ.",
+          },
+          ...enhancedMessages,
+        ];
+      } else {
+        enhancedMessages = [
+          {
+            role: "system",
+            content:
+`ИНТЕРНЕТ-ПОИСК ВКЛЮЧЕН ПОЛЬЗОВАТЕЛЕМ.
+
+НИЖЕ ПРИВЕДЕНЫ АКТУАЛЬНЫЕ ДАННЫЕ ИЗ ИНТЕРНЕТА.
+
+ИСПОЛЬЗУЙ ИХ В ОТВЕТЕ.
+
+
+
+${webSearchResult}`,
+          },
+          ...enhancedMessages,
+        ];
+      }
     }
 
-    // Для pro модели используем deepseek-reasoner, для остальных deepseek-chat
-    const actualModel = (model === 'pro') ? 'deepseek-reasoner' : 'deepseek-chat';
+    // DeepSeek only
+    const deepseekKey = process.env.DEEPSEEK_API_KEY;
+    if (!deepseekKey) {
+      return res.status(500).json({ error: "No API key configured (DEEPSEEK_API_KEY is missing)" });
+    }
+
+    const apiProvider = "deepseek";
+    const actualModel =
+      model === "pro" ? "deepseek-reasoner" :
+      model === "lite" ? "deepseek-chat" :
+      (typeof model === "string" && model.startsWith("deepseek-")) ? model :
+      "deepseek-chat";
+
     const priceInfo = getTokenPrices(actualModel);
+    console.log(
+      `🎯 Model Mapping | Requested: "${model}" → Actual: "${actualModel}" | Price: $${priceInfo.input}/1M in, $${priceInfo.output}/1M out | Stream: ${stream}`
+    );
 
-    console.log(`🎯 Model Mapping | Requested: "${model}" → Actual: "${actualModel}" | Price: $${priceInfo.input}/1M in, $${priceInfo.output}/1M out | Stream: ${stream} | Messages: ${messages.length}`);
+    const apiUrl = "https://api.deepseek.com/chat/completions";
+    const targetHost = new URL(apiUrl).hostname;
 
-    // DeepSeek API
-    const deepseekResponse = await fetch('https://api.deepseek.com/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      ...(proxyAgent && { dispatcher: proxyAgent }),
-      body: JSON.stringify({
-        model: actualModel,
-        messages: enhancedMessages,
-        stream: stream,
-        temperature: 0.7,
-      }),
+    // Функция для валидации и ограничения числовых параметров
+    const clampNum = (v, min, max) =>
+      typeof v === "number" && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : undefined;
+
+    // Установка дефолтов в зависимости от типа запроса
+    const defaultTemp = requestType === "website_generation" ? 0.2 : 0.7;
+    const defaultMax = requestType === "website_generation" ? 7000 : 1200;
+
+    // Таймаут для генерации сайтов (тяжелые запросы)
+    const timeoutMs = requestType === "website_generation" ? 90000 : 30000;
+
+    let proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.ALL_PROXY || null;
+    let proxyHost = null;
+    try { proxyHost = proxyUrl ? new URL(proxyUrl).hostname : null; } catch {}
+
+    // Логируем прокси настройки
+    console.log("🌐 Proxy env", {
+      HTTPS_PROXY: process.env.HTTPS_PROXY || null,
+      HTTP_PROXY: process.env.HTTP_PROXY || null,
+      ALL_PROXY: process.env.ALL_PROXY || null,
+      NO_PROXY: process.env.NO_PROXY || null,
+      proxyUrlConfigured: !!proxyUrl,
+      proxyHost,
+      targetHost,
     });
 
-    if (!deepseekResponse.ok) {
-      const errorText = await deepseekResponse.text();
-      console.error(`❌ DeepSeek API Error [Artifacts] | Status: ${deepseekResponse.status} ${deepseekResponse.statusText} | Model: ${model} | Error: ${errorText.substring(0, 500)}`);
-      return res.status(deepseekResponse.status).json({
-        error: 'DeepSeek API error',
-        details: errorText
+    try {
+      // до fetch — быстрый lookup в том же процессе
+      const addrs = await dns.lookup(targetHost, { all: true });
+      console.log("✅ DNS upstream", { targetHost, addrs });
+      if (proxyHost) {
+        const paddrs = await dns.lookup(proxyHost, { all: true });
+        console.log("✅ DNS proxy", { proxyHost, paddrs });
+      }
+    } catch (e) {
+      console.error("❌ DNS precheck failed", { message: e.message, code: e.code });
+    }
+
+    // Логируем фактические параметры для диагностики
+    console.log("🧾 Upstream params", {
+      requestType,
+      actualModel,
+      stream,
+      temperature: clampNum(temperature, 0, 1) ?? defaultTemp,
+      max_tokens: clampNum(max_tokens, 128, 8000) ?? defaultMax,
+      hasResponseFormat: !!response_format,
+    });
+
+    // Decision-pass ветка (перед основным API вызовом)
+    if (isDecision) {
+      const decisionResp = await fetchWithTimeout(
+        apiUrl,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${deepseekKey}`,
+          },
+          ...(proxyAgent && { dispatcher: proxyAgent }),
+          body: JSON.stringify({
+            model: "deepseek-chat",
+            messages: [
+              {
+                role: "system",
+                content: DECISION_SYSTEM_PROMPT,
+              },
+              ...messages.slice(-1), // только последний user message
+            ],
+            temperature: 0.0,
+            max_tokens: 300,
+          }),
+        },
+        15000
+      );
+
+      if (!decisionResp.ok) {
+        const errorText = await decisionResp.text();
+        console.error(`❌ Decision API Error | Status: ${decisionResp.status} | Error: ${errorText}`);
+        return res.status(decisionResp.status).json({
+          error: "Decision API error",
+          details: errorText,
+        });
+      }
+
+      const data = await decisionResp.json();
+      const raw = data?.choices?.[0]?.message?.content || "{}";
+
+      let decision;
+      try {
+        decision = JSON.parse(raw);
+      } catch {
+        decision = { need_web: false };
+      }
+
+      return res.json(decision);
+    }
+
+    let apiResponse;
+    try {
+      apiResponse = await fetchWithTimeout(
+        apiUrl,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${deepseekKey}`,
+          },
+          ...(proxyAgent && { dispatcher: proxyAgent }), // оставляем, если у вас undici ProxyAgent
+          body: JSON.stringify({
+            model: actualModel,
+            messages: enhancedMessages,
+            stream,
+            temperature: clampNum(temperature, 0, 1) ?? defaultTemp,
+            max_tokens: clampNum(max_tokens, 128, 8000) ?? defaultMax,
+            // response_format прокидываем только если пришёл (и если DeepSeek у вас это реально принимает)
+            ...(response_format ? { response_format } : {}),
+          }),
+        },
+        timeoutMs
+      );
+    } catch (err) {
+      // Диагностика сетевых причин (DNS/IPv6/proxy/TLS)
+      const cause = err?.cause || {};
+      console.error("❌ DeepSeek upstream fetch THROW", {
+        message: err?.message,
+        name: err?.name,
+        cause,
+        code: err?.cause?.code,
+        stack: err?.stack,
+      });
+      return res.status(502).json({
+        error: "DeepSeek upstream fetch failed",
+        details: err?.message || "fetch failed",
+        cause: cause?.code || cause?.message || null,
+        // самое важное для диагностики:
+        failedHost: cause?.hostname || null,
+        targetHost,
+        proxyHost,
+        proxyUrlConfigured: !!proxyUrl,
       });
     }
 
-    if (stream) {
-      // Для потоковых ответов обрабатываем поток для получения информации о токенах
-      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Connection', 'keep-alive');
+    if (!apiResponse.ok) {
+      const errorText = await apiResponse.text().catch(() => "");
+      console.error(
+        `❌ DEEPSEEK API Error | Status: ${apiResponse.status} ${apiResponse.statusText} | Model: ${actualModel} | Error: ${errorText.substring(
+          0,
+          500
+        )}`
+      );
+      return res.status(apiResponse.status).json({
+        error: "DEEPSEEK API error",
+        details: errorText,
+      });
+    }
 
-      const reader = deepseekResponse.body.getReader();
+    // Списание комиссии после успешного ответа от API - только для чата, не для decision
+    if (requestType === "chat" && !isDecision) {
+      const ref =
+        requestId ||
+        `chat_${actualUserId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+      const charge = DatabaseService.chargeChatFee1Rub(actualUserId, ref);
+      if (!charge.ok) {
+        return res.status(402).json({
+          error: "Insufficient funds",
+          details: "1 RUB required per chat response",
+          balance: charge.balance ?? 0,
+        });
+      }
+    }
+
+    if (stream) {
+      // Stream passthrough
+      res.status(200);
+      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      res.flushHeaders?.();
+
+      const body = apiResponse.body;
+      if (!body) {
+        res.write(`data: ${JSON.stringify({ error: "upstream_no_body" })}\n\n`);
+        return res.end();
+      }
+
       const decoder = new TextDecoder();
       let usageInfo = null;
 
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          const chunk = decoder.decode(value);
+      const handleChunk = (chunkStr) => {
+        res.write(chunkStr);
 
-          // Проверяем, содержит ли чанк информацию об использовании токенов
-          if (chunk.includes('"usage"')) {
-            try {
-              // Парсим JSON для извлечения информации об использовании
-              const lines = chunk.split('\n');
-              for (const line of lines) {
-                if (line.startsWith('data: ') && line.includes('"usage"')) {
-                  const jsonStr = line.slice(6);
-                  const parsed = JSON.parse(jsonStr);
-                  if (parsed.usage) {
-                    usageInfo = parsed.usage;
-                  }
-                }
+        // Best-effort: usage extraction (depends on provider stream format)
+        if (chunkStr.includes('"usage"')) {
+          try {
+            const lines = chunkStr.split("\n");
+            for (const line of lines) {
+              if (line.startsWith("data: ") && line.includes('"usage"')) {
+                const jsonStr = line.slice(6);
+                const parsed = JSON.parse(jsonStr);
+                if (parsed.usage) usageInfo = parsed.usage;
               }
-            } catch (e) {
-              // Игнорируем ошибки парсинга
             }
-          }
+          } catch {}
+        }
+      };
 
-          res.write(chunk);
+      try {
+        if (typeof body.getReader === "function") {
+          const reader = body.getReader();
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            handleChunk(decoder.decode(value, { stream: true }));
+          }
+        } else if (typeof body.on === "function") {
+          await new Promise((resolve, reject) => {
+            body.on("data", (buf) => handleChunk(buf.toString("utf8")));
+            body.on("end", resolve);
+            body.on("error", reject);
+          });
+        } else {
+          throw new Error("Unsupported apiResponse.body stream type");
         }
 
-        // После завершения стрима добавляем информацию о токенах
+        // cost + db write
         if (usageInfo) {
           const prices = getTokenPrices(actualModel);
           const inputTokens = usageInfo.prompt_tokens || 0;
           const outputTokens = usageInfo.completion_tokens || 0;
-          const totalTokens = usageInfo.total_tokens || (inputTokens + outputTokens);
-
-          const inputCost = (inputTokens / 1000000) * prices.input;
-          const outputCost = (outputTokens / 1000000) * prices.output;
+          const totalTokens = usageInfo.total_tokens || inputTokens + outputTokens;
+          const inputCost = (inputTokens / 1_000_000) * prices.input;
+          const outputCost = (outputTokens / 1_000_000) * prices.output;
           const totalCost = inputCost + outputCost;
 
           const tokenCostData = {
@@ -1435,16 +2369,14 @@ app.post('/api/chat', async (req, res) => {
             inputCost,
             outputCost,
             totalCost,
-            model: actualModel
+            model: actualModel,
+            provider: apiProvider,
+            currency: "USD",
           };
 
-          // Отправляем информацию о токенах в отдельном чанке
-          const tokenChunk = `data: ${JSON.stringify({ tokenCost: tokenCostData })}\n\n`;
-          res.write(tokenChunk);
+          res.write(`data: ${JSON.stringify({ tokenCost: tokenCostData })}\n\n`);
 
-          // Записываем использование API в базу данных
           try {
-            console.log(`📊 API Usage [STREAM] | User: ${actualUserId} | Model: ${actualModel} | Session: ${sessionId || 'none'} | Tokens: ${inputTokens} in + ${outputTokens} out = ${totalTokens} total | Cost: $${totalCost.toFixed(6)} | Input: $${inputCost.toFixed(6)} | Output: $${outputCost.toFixed(6)}`);
             DatabaseService.recordApiUsage(
               actualUserId,
               sessionId || null,
@@ -1452,124 +2384,337 @@ app.post('/api/chat', async (req, res) => {
               inputTokens,
               outputTokens,
               totalCost,
-              'chat'
-            );
-
-            // Списываем средства с баланса пользователя
-            console.log("💳 Deduct attempt:", { actualUserId, totalCost, sessionId });
-            DatabaseService.updateUserBalance(actualUserId, -totalCost);
-
-            const userAfter = DatabaseService.getUserById(actualUserId);
-            console.log("✅ Balance after deduct:", userAfter?.balance);
-            
-            // Создаем транзакцию
-            const lastUserMsg = messages.filter(m => m.role === 'user').pop();
-            const description = lastUserMsg 
-              ? `Chat: ${lastUserMsg.content.substring(0, 50)}...`
-              : 'Chat request';
-              
-            DatabaseService.createTransaction(
-              actualUserId,
-              'spend',
-              -totalCost,
-              description,
-              `chat_${Date.now()}`
+              requestType
             );
           } catch (dbError) {
-            console.error(`❌ DB Error [Stream Usage] | User: ${actualUserId} | Session: ${sessionId || 'none'} | Cost: $${totalCost.toFixed(6)} | Error: ${dbError.message || dbError}`);
+            console.error("❌ DB Error [Stream Usage]:", dbError);
           }
         }
-
+      } catch (e) {
+        console.error("❌ Stream proxy failed:", e?.stack || e);
+        try {
+          res.write(`data: ${JSON.stringify({ error: "stream_proxy_failed" })}\n\n`);
+        } catch {}
       } finally {
         res.end();
       }
-    } else {
-      // Для обычных ответов возвращаем JSON
-      const data = await deepseekResponse.json();
-
-      // Добавляем расчет стоимости токенов
-      if (data.usage) {
-        const prices = getTokenPrices(actualModel);
-        const inputTokens = data.usage.prompt_tokens || 0;
-        const outputTokens = data.usage.completion_tokens || 0;
-        const totalTokens = data.usage.total_tokens || (inputTokens + outputTokens);
-
-        const inputCost = (inputTokens / 1000000) * prices.input;
-        const outputCost = (outputTokens / 1000000) * prices.output;
-        const totalCost = inputCost + outputCost;
-
-        data.tokenCost = {
-          inputTokens,
-          outputTokens,
-          totalTokens,
-          inputCost,
-          outputCost,
-          totalCost,
-          model: actualModel,
-          currency: 'USD',
-          provider: 'DeepSeek'
-        };
-
-        // Записываем использование API в базу данных
-        try {
-          console.log(`📊 API Usage [NON-STREAM] | User: ${actualUserId} | Model: ${actualModel} | Session: ${sessionId || 'none'} | Tokens: ${inputTokens} in + ${outputTokens} out = ${totalTokens} total | Cost: $${totalCost.toFixed(6)} | Input: $${inputCost.toFixed(6)} | Output: $${outputCost.toFixed(6)}`);
-          DatabaseService.recordApiUsage(
-            actualUserId,
-            sessionId || null,
-            actualModel,
-            inputTokens,
-            outputTokens,
-            totalCost,
-            'chat'
-          );
-
-          // Списываем средства с баланса пользователя
-          DatabaseService.updateUserBalance(actualUserId, -totalCost);
-          
-          // Создаем транзакцию
-          const lastUserMsg = messages.filter(m => m.role === 'user').pop();
-          const description = lastUserMsg 
-            ? `Chat: ${lastUserMsg.content.substring(0, 50)}...`
-            : 'Chat request';
-            
-          DatabaseService.createTransaction(
-            actualUserId,
-            'spend',
-            -totalCost,
-            description,
-            `chat_${Date.now()}`
-          );
-        } catch (dbError) {
-          console.error(`❌ DB Error [Non-Stream Usage] | User: ${actualUserId} | Session: ${sessionId || 'none'} | Cost: $${totalCost.toFixed(6)} | Error: ${dbError.message || dbError}`);
-        }
-      }
-
-      // Возвращаем ответ в стандартном формате
-      res.json(data);
+      return;
     }
 
+    // Non-stream JSON
+    const data = await apiResponse.json();
+
+    const content = data?.choices?.[0]?.message?.content || "";
+
+    console.log("finish_reason:", data?.choices?.[0]?.finish_reason);
+    console.log("content_len:", content.length);
+    console.log("content_head:", content.slice(0, 120));
+    console.log("content_tail:", content.slice(-120));
+
+    if (data.usage) {
+      const prices = getTokenPrices(actualModel);
+      const inputTokens = data.usage.prompt_tokens || 0;
+      const outputTokens = data.usage.completion_tokens || 0;
+      const totalTokens = data.usage.total_tokens || inputTokens + outputTokens;
+      const inputCost = (inputTokens / 1_000_000) * prices.input;
+      const outputCost = (outputTokens / 1_000_000) * prices.output;
+      const totalCost = inputCost + outputCost;
+
+      data.tokenCost = {
+        inputTokens,
+        outputTokens,
+        totalTokens,
+        inputCost,
+        outputCost,
+        totalCost,
+        model: actualModel,
+        currency: "USD",
+        provider: apiProvider, // фикс
+      };
+
+      try {
+        console.log(
+          `📊 API Usage [NON-STREAM] | Provider: DeepSeek | User: ${actualUserId} | Model: ${actualModel} | Session: ${
+            sessionId || "none"
+          } | Tokens: ${inputTokens} in + ${outputTokens} out = ${totalTokens} | Cost: $${totalCost.toFixed(6)}`
+        );
+
+        DatabaseService.recordApiUsage(
+          actualUserId,
+          sessionId || null,
+          actualModel,
+          inputTokens,
+          outputTokens,
+          totalCost,
+          requestType
+        );
+      } catch (dbError) {
+        console.error("❌ DB Error [Non-Stream Usage]:", dbError);
+      }
+    }
+
+    return res.json(data);
   } catch (error) {
-    console.error(`❌ Chat API Proxy Error | Model: ${req.body?.model || 'unknown'} | Messages: ${req.body?.messages?.length || 0} | Stream: ${req.body?.stream || false} | Error: ${error.message || error} | Stack: ${error.stack?.substring(0, 200) || 'none'}...`);
+    console.error("❌ Chat API Proxy Error", {
+      model: req.body?.model,
+      stream: req.body?.stream,
+      message: error?.message,
+      cause: error?.cause,
+      stack: error?.stack,
+    });
+
     res.status(500).json({
-      error: 'Failed to process chat request',
-      details: error.message
+      error: "Failed to process chat request",
+      details: error?.message || "unknown_error",
+      cause: error?.cause?.code || error?.cause?.message || null,
     });
   }
 });
 
 // TTS functionality removed - using only DeepSeek models
 
+// === Website Execution API ===
+
+// Planner: генерирует план шагов для создания сайта
+async function planWebsite(prompt) {
+  const systemPrompt = `Ты планируешь создание статического сайта БЕЗ фреймворков.
+Ответь ТОЛЬКО валидным JSON без markdown.
+
+КРИТИЧНО:
+- steps ДОЛЖЕН содержать РОВНО 3 элемента и ТОЛЬКО эти файлы:
+  1) index.html
+  2) styles.css
+  3) app.js
+- Запрещено добавлять любые другие файлы (about.html, contact.html и т.п.)
+- deps всегда {}.
+
+Формат:
+{
+  "title": "Название сайта",
+  "deps": {},
+  "steps": [
+    { "id": "index", "tool": "create_file", "file": "index.html", "description": "Главная страница" },
+    { "id": "styles", "tool": "create_file", "file": "styles.css", "description": "Стили" },
+    { "id": "app", "tool": "create_file", "file": "app.js", "description": "JavaScript логика" }
+  ]
+}`;
+
+  const resp = await fetch("https://api.deepseek.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${process.env.DEEPSEEK_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: MODEL,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: `Создай план для сайта: ${prompt}` }
+      ],
+      response_format: { type: "json_object" },
+      ...PLAN_PARAMS
+    })
+  });
+
+  const data = await resp.json();
+  const raw = data?.choices?.[0]?.message?.content;
+
+  if (!raw) throw new Error("No response from planner");
+
+  try {
+    const plan = JSON.parse(raw);
+    // Валидация плана
+    if (!plan.title || !plan.steps || !Array.isArray(plan.steps)) {
+      throw new Error("Invalid plan structure");
+    }
+    return plan;
+  } catch (e) {
+    throw new Error(`Failed to parse plan: ${e.message}`);
+  }
+}
+
+// Executor: выполняет отдельный шаг
+async function executeStep(step, context = {}) {
+  if (step.tool === "create_file") {
+    const content = await generateFile(step.file, context);
+    return { file: { name: step.file, content } };
+  }
+  throw new Error(`Unknown tool: ${step.tool}`);
+}
+
+// Генератор файла: создает содержимое файла через LLM
+async function generateFile(filename, context = {}) {
+  const filePrompts = {
+    "index.html": `Создай HTML-файл для статического сайта.
+Требования:
+- Валидный HTML5
+- Подключи styles.css и app.js
+- Используй семантические теги
+- Адаптивный дизайн (viewport meta)
+- Минимум 3 секции контента
+- Чистый, читаемый код
+
+Верни ТОЛЬКО HTML-код, без markdown, без объяснений.`,
+
+    "styles.css": `Создай CSS-файл для статического сайта.
+Требования:
+- Современный дизайн
+- Адаптивность (mobile-first)
+- Красивые цвета и типографика
+- Минимум 5 CSS-свойств
+- Чистый код без фреймворков
+
+Верни ТОЛЬКО CSS-код, без markdown, без объяснений.`,
+
+    "app.js": `Создай JavaScript-файл для статического сайта.
+Требования:
+- Vanilla JavaScript (без фреймворков)
+- Минимум 3 интерактивных функции
+- Обработка событий
+- Работа с DOM
+- Чистый код без import/export
+
+Верни ТОЛЬКО JavaScript-код, без markdown, без объяснений.`
+  };
+
+  const prompt = filePrompts[filename];
+  if (!prompt) {
+    throw new Error(`Unknown file type: ${filename}`);
+  }
+
+  const resp = await fetch("https://api.deepseek.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${process.env.DEEPSEEK_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: MODEL,
+      messages: [
+        { role: "system", content: "Ты создаешь файлы для статического сайта. Отвечай только кодом файла, без объяснений и markdown." },
+        { role: "user", content: prompt }
+      ],
+      ...ARTIFACT_PARAMS
+    })
+  });
+
+  const data = await resp.json();
+  const content = data?.choices?.[0]?.message?.content;
+
+  if (!content) {
+    throw new Error(`Failed to generate ${filename}`);
+  }
+
+  // Очищаем от возможного markdown
+  return content.replace(/^```.*$/gm, '').trim();
+}
+
+// Website execution endpoint с streaming
+app.post("/api/website/execute", requireAuth, async (req, res) => {
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Transfer-Encoding", "chunked");
+
+  const send = (event) => {
+    res.write(JSON.stringify(event) + "\n");
+  };
+
+  try {
+    const { prompt, sessionId } = req.body;
+
+    if (!prompt || !sessionId) {
+      return res.status(400).json({ error: "Missing prompt or sessionId" });
+    }
+
+    // STEP 1 — PLAN
+    send({ type: "step_start", id: "plan", label: "Формирую план сайта" });
+
+    const plan = await planWebsite(prompt);
+
+    // ✅ Санитайзер плана (фильтруем только нужные файлы)
+    plan.steps = (Array.isArray(plan.steps) ? plan.steps : []).filter(
+      s => s?.tool === "create_file" && ["index.html","styles.css","app.js"].includes(s.file)
+    );
+
+    // если модель не дала нужные шаги — подставляем дефолт
+    if (plan.steps.length !== 3) {
+      plan.steps = [
+        { id: "index", tool: "create_file", file: "index.html", description: "Главная страница" },
+        { id: "styles", tool: "create_file", file: "styles.css", description: "Стили" },
+        { id: "app", tool: "create_file", file: "app.js", description: "JavaScript логика" },
+      ];
+    }
+
+    send({ type: "step_done", id: "plan" });
+
+    // STEP 2 — EXECUTE
+    const files = {};
+    const executionContext = { plan, prompt };
+
+    for (const step of plan.steps) {
+      send({ type: "step_start", id: step.id, label: step.description || `Создаю ${step.file}` });
+
+      try {
+        const result = await executeStep(step, executionContext);
+        if (result.file) {
+          files[`/${result.file.name}`] = result.file.content; // Добавляем слэш в начало
+        }
+        send({ type: "step_done", id: step.id });
+      } catch (stepError) {
+        console.error(`Step ${step.id} failed:`, stepError);
+        send({ type: "step_error", id: step.id, error: stepError.message });
+        throw stepError; // Прерываем выполнение
+      }
+    }
+
+    // STEP 3 — SAVE
+    send({ type: "step_start", id: "save", label: "Сохраняю сайт" });
+
+    const artifactId = DatabaseService.createArtifact(
+      parseInt(sessionId),
+      "website",
+      plan.title,
+      files,
+      plan.deps || null
+    );
+
+    console.log('🎯 Artifact created with ID:', artifactId, 'Type:', typeof artifactId);
+
+    send({ type: "step_done", id: "save" });
+
+    // FINISH
+    const finalMessage = JSON.stringify({ type: "done", artifactId });
+    console.log('🎯 Sending final message:', finalMessage);
+    send({ type: "done", artifactId });
+    res.end();
+
+  } catch (e) {
+    console.error("Website execution error:", e);
+    send({ type: "step_error", id: "fatal", error: e.message });
+    res.end();
+  }
+});
+
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Заглушка для RUM (Real User Monitoring) - предотвращает 404 ошибки
+app.get('/rum', (req, res) => {
+  res.status(204).end(); // No Content
+});
+
 // GET /api/users/:id/balance
-app.get("/api/users/:id/balance", (req, res) => {
+app.get("/api/users/:id/balance", requireAuth, (req, res) => {
   try {
     const userId = Number(req.params.id);
     if (!Number.isFinite(userId)) {
       return res.status(400).json({ error: "Invalid user id" });
+    }
+
+    // Проверяем, что пользователь запрашивает свой баланс
+    if (userId !== req.user.id) {
+      return res.status(403).json({ error: "Forbidden" });
     }
 
     const user = DatabaseService.getUserById(userId);
@@ -1583,11 +2728,16 @@ app.get("/api/users/:id/balance", (req, res) => {
 });
 
 // POST /api/users/:id/deduct-tokens (списываем USD totalCost)
-app.post("/api/users/:id/deduct-tokens", (req, res) => {
+app.post("/api/users/:id/deduct-tokens", requireAuth, (req, res) => {
   try {
     const userId = Number(req.params.id);
     if (!Number.isFinite(userId)) {
       return res.status(400).json({ error: "Invalid user id" });
+    }
+
+    // Проверяем, что пользователь списывает со своего счета
+    if (userId !== req.user.id) {
+      return res.status(403).json({ error: "Forbidden" });
     }
 
     const { totalCost, model, inputTokens, outputTokens, totalTokens } = req.body || {};
@@ -1745,17 +2895,47 @@ app.post('/api/test-market-query', (req, res) => {
   });
 });
 
+// RUM beacon fallback (prevents noisy 404 in console)
+app.get("/rum", (req, res) => res.status(204).end());
+app.post("/rum", (req, res) => res.status(204).end());
+app.all(/^\/rum(\/.*)?$/, (req, res) => res.status(204).end());
+
 // Serve static files from dist directory
 app.use(express.static(path.join(__dirname, 'dist')));
 
+// Test route
+app.get('/api/test', (req, res) => {
+  res.json({ message: 'Test route works' });
+});
+
+// Add no-cache headers for index.html to ensure fresh JS loading
+app.use((req, res, next) => {
+  if (req.path === "/" || req.path.endsWith(".html")) {
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+  }
+  next();
+});
+
 // SPA fallback - all non-API routes should return index.html
 app.use((req, res, next) => {
-  // Don't serve index.html for API routes
+  // Skip API routes - let them be handled by specific routes
   if (req.path.startsWith('/api/')) {
-    return res.status(404).json({ error: 'API endpoint not found' });
+    return next();
   }
   // For all other routes, serve index.html
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+});
+
+// Force no-cache headers for HTML files (overrides express.static defaults)
+app.use((req, res, next) => {
+  if (req.path.endsWith('.html') || req.path === '/') {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+  }
+  next();
 });
 
 // Start server

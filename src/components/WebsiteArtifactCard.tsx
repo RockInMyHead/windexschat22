@@ -1,11 +1,47 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
+
+// Hook для исправления fullscreen в Sandpack Preview (включая Shadow DOM)
+export function useFixSandpackFullscreen() {
+  useEffect(() => {
+    const apply = () => {
+      const seen = new Set<Node>();
+      const walk = (node: Node) => {
+        if (!node || seen.has(node)) return;
+        seen.add(node);
+
+        if ((node as Element).tagName === "IFRAME") {
+          const title = node.getAttribute("title") || "";
+          const src = node.getAttribute("src") || "";
+          if (title.includes("Sandpack Preview") || src.includes("sandpack-static-server")) {
+            node.setAttribute("allow", "fullscreen");
+            node.allowFullscreen = true;
+          }
+        }
+        if (node.shadowRoot) walk(node.shadowRoot);
+        node.childNodes?.forEach?.(walk);
+      };
+      walk(document.documentElement);
+    };
+
+    apply();
+    const obs = new MutationObserver(apply);
+    obs.observe(document.documentElement, { subtree: true, childList: true, attributes: true });
+    return () => obs.disconnect();
+  }, []);
+}
 import { Button } from "@/components/ui/button";
 import { Copy, Check, Code, Eye, Download, AlertTriangle, Play } from "lucide-react";
-import { Sandpack } from "@codesandbox/sandpack-react";
+import {
+  SandpackProvider,
+  SandpackLayout,
+  SandpackCodeEditor,
+  SandpackPreview
+} from "@codesandbox/sandpack-react";
 import type { Artifact } from "@/lib/api";
+import { buildPreviewSrcDoc } from "@/lib/preview";
 
 // Функция преобразования файлов артефакта в формат Sandpack
-function toSandpackFiles(artifactFiles: Record<string, string>) {
+function toSandpackFiles(artifactFiles: Record<string, string>, isVanillaSite: boolean) {
   const files: Record<string, { code: string }> = {};
 
   const hasReactVite =
@@ -16,10 +52,17 @@ function toSandpackFiles(artifactFiles: Record<string, string>) {
     files[p] = { code };
   };
 
-  // 1) Нормализация + корректная раскладка под Vite template
+  // 1) Нормализация файлов
   for (const [path, code] of Object.entries(artifactFiles)) {
     const normalized = path.replace(/^\/+/, ""); // убираем ведущие /
 
+    // Для vanilla сайтов - простая нормализация без перестройки
+    if (isVanillaSite) {
+      put(`/${normalized}`, code);
+      continue;
+    }
+
+    // Для React/Vite проектов - существующая логика
     // package.json / конфиги оставляем в корне как есть
     if (
       normalized === "package.json" ||
@@ -57,7 +100,7 @@ function toSandpackFiles(artifactFiles: Record<string, string>) {
     put(`/${normalized}`, code);
   }
 
-  // 2) package.json: всегда гарантируем deps + esbuild-wasm
+  // 2) package.json: для vanilla сайтов не нужен, для React - добавляем deps
   const ensurePackageJson = (raw?: string) => {
     let pkg: any;
     try {
@@ -69,6 +112,7 @@ function toSandpackFiles(artifactFiles: Record<string, string>) {
     pkg.name ||= "artifact-preview";
     pkg.private = true;
 
+    if (!isVanillaSite) {
     pkg.scripts ||= { dev: "vite", build: "vite build", preview: "vite preview" };
 
     pkg.dependencies ||= {};
@@ -81,11 +125,14 @@ function toSandpackFiles(artifactFiles: Record<string, string>) {
     pkg.devDependencies["vite"] ||= "^5.4.9";
     pkg.devDependencies["@vitejs/plugin-react"] ||= "^4.0.0";
     pkg.devDependencies["typescript"] ||= "^5.0.0";
+    }
 
     return JSON.stringify(pkg, null, 2);
   };
 
+  if (!isVanillaSite) {
   put("/package.json", ensurePackageJson(files["/package.json"]?.code));
+  }
 
   // 3) Tailwind: отключаем в превью (иначе нужен postcss/tailwind config)
   const cssKeys = ["/src/index.css", "/index.css"];
@@ -95,7 +142,8 @@ function toSandpackFiles(artifactFiles: Record<string, string>) {
     }
   }
 
-  // 4) Минимальные конфиги под Vite/TS
+  // 4) Минимальные конфиги под Vite/TS (только для React проектов)
+  if (!isVanillaSite) {
   if (!files["/vite.config.ts"]) {
     put(
       "/vite.config.ts",
@@ -123,20 +171,23 @@ export default defineConfig({ plugins: [react()] });`
 
   if (!files["/src/vite-env.d.ts"]) {
     put("/src/vite-env.d.ts", `/// <reference types="vite/client" />`);
+    }
   }
 
   // 5) Страховка: если React/Vite артефакт, но нет /src/main.tsx — попробуем перекинуть
-  if (hasReactVite && !files["/src/main.tsx"] && files["/main.tsx"]) {
+  if (hasReactVite && !isVanillaSite) {
+    if (!files["/src/main.tsx"] && files["/main.tsx"]) {
     files["/src/main.tsx"] = files["/main.tsx"];
     delete files["/main.tsx"];
   }
-  if (hasReactVite && !files["/src/App.tsx"] && files["/App.tsx"]) {
+    if (!files["/src/App.tsx"] && files["/App.tsx"]) {
     files["/src/App.tsx"] = files["/App.tsx"];
     delete files["/App.tsx"];
   }
-  if (hasReactVite && !files["/src/index.css"] && files["/index.css"]) {
+    if (!files["/src/index.css"] && files["/index.css"]) {
     files["/src/index.css"] = files["/index.css"];
     delete files["/index.css"];
+    }
   }
 
   return files;
@@ -148,43 +199,100 @@ interface WebsiteArtifactCardProps {
 }
 
 export function WebsiteArtifactCard({ artifact, onUpdate }: WebsiteArtifactCardProps) {
-  const [copied, setCopied] = useState(false);
-  const [viewMode, setViewMode] = useState<"code" | "preview">("code");
-  const [selectedFile, setSelectedFile] = useState<string>(Object.keys(artifact.files)[0] || "");
   const [sandpackError, setSandpackError] = useState<string>("");
+  const [previewError, setPreviewError] = useState<string>("");
+  const [previewKey, setPreviewKey] = useState<number>(0); // Для перезагрузки превью
+  const [isPreviewLoading, setIsPreviewLoading] = useState<boolean>(false);
+  const [useSimplePreview, setUseSimplePreview] = useState<boolean>(false); // Переключатель режима превью
 
-  // Обработка ошибок Sandpack
+  // Исправление fullscreen в Sandpack Preview
+  useFixSandpackFullscreen();
+
+  // Определяем тип артефакта для корректного превью
+  const isVanillaSite = useMemo(() =>
+    Boolean(artifact.files["/index.html"] && artifact.files["/styles.css"] && artifact.files["/app.js"]),
+    [artifact.files]
+  );
+
+  // Мемоизируем преобразование файлов для Sandpack (оптимизация производительности)
+  const sandpackFiles = useMemo(() =>
+    toSandpackFiles(artifact.files, isVanillaSite),
+    [artifact.files, isVanillaSite]
+  );
+
+  // Обработка ошибок Sandpack и превью
   useEffect(() => {
-    const handleSandpackError = (event: ErrorEvent) => {
-      if (event.message.includes('sandbox') || event.message.includes('presentation')) {
-        setSandpackError('Sandpack временно недоступен из-за ограничений браузера. Попробуйте перезагрузить страницу.');
-      }
+    // Небольшая задержка перед началом загрузки для предотвращения зависаний UI
+    const startTimeoutId = setTimeout(() => {
+      setIsPreviewLoading(true);
+      setSandpackError("");
+      setPreviewError("");
+
+      const handleSandpackError = (event: ErrorEvent) => {
+        if (event.message.includes('sandbox') || event.message.includes('presentation')) {
+          setSandpackError('Sandpack временно недоступен из-за ограничений браузера. Попробуйте перезагрузить страницу.');
+          setIsPreviewLoading(false);
+        }
+      };
+
+      const handlePreviewError = (event: MessageEvent) => {
+        // Обрабатываем сообщения об ошибках из iframe превью
+        if (event.data?.type === 'error' || event.data?.type === 'unhandledrejection') {
+          setPreviewError('Ошибка выполнения JavaScript в превью сайта. Код сайта может содержать несогласованные элементы.');
+          setIsPreviewLoading(false);
+        }
+      };
+
+      // Дополнительная страховка: патчим iframe после монтирования
+      const patchIframe = () => {
+        setTimeout(() => {
+          const iframes = document.querySelectorAll('iframe[title*="Sandpack"]');
+          iframes.forEach((iframe) => {
+            const currentSandbox = iframe.getAttribute('sandbox') || '';
+            if (currentSandbox.includes('allow-presentation')) {
+              iframe.setAttribute('sandbox', [
+                'allow-scripts', 'allow-same-origin', 'allow-forms',
+                'allow-modals', 'allow-downloads'
+              ].join(' '));
+            }
+            iframe.removeAttribute('allow');
+            iframe.removeAttribute('allowfullscreen');
+          });
+        }, 2000);
+      };
+
+      window.addEventListener('error', handleSandpackError);
+      window.addEventListener('message', handlePreviewError);
+      patchIframe();
+
+      // Таймер для успешной загрузки превью (оптимистичный подход)
+      const successTimeoutId = setTimeout(() => {
+        if (isPreviewLoading && !sandpackError && !previewError) {
+          setIsPreviewLoading(false);
+        }
+      }, 3000); // 3 секунды - считаем успешной загрузкой
+
+      // Timeout для обнаружения зависаний превью
+      const errorTimeoutId = setTimeout(() => {
+        if (isPreviewLoading) {
+          setPreviewError('Превью сайта не загрузилось вовремя. Возможно, JavaScript код содержит ошибки.');
+          setIsPreviewLoading(false);
+        }
+      }, 10000); // Уменьшили до 10 секунд для более быстрого обнаружения проблем
+
+      // Cleanup function для внутренних таймеров
+      return () => {
+        window.removeEventListener('error', handleSandpackError);
+        window.removeEventListener('message', handlePreviewError);
+        clearTimeout(successTimeoutId);
+        clearTimeout(errorTimeoutId);
+      };
+    }, 100); // Небольшая задержка 100ms перед началом загрузки
+
+    return () => {
+      clearTimeout(startTimeoutId);
     };
-
-    window.addEventListener('error', handleSandpackError);
-    return () => window.removeEventListener('error', handleSandpackError);
-  }, []);
-
-  const handleCopy = async () => {
-    try {
-      const filesContent = Object.entries(artifact.files)
-        .map(([path, content]) => `// ${path}\n${content}`)
-        .join("\n\n---\n\n");
-
-      await navigator.clipboard.writeText(filesContent);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (error) {
-      console.error('Failed to copy to clipboard:', error);
-      // Fallback: показать код в alert
-      const filesContent = Object.entries(artifact.files)
-        .map(([path, content]) => `// ${path}\n${content}`)
-        .join("\n\n---\n\n");
-      alert(`Код скопирован в буфер обмена:\n\n${filesContent.slice(0, 500)}${filesContent.length > 500 ? '\n\n...' : ''}`);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }
-  };
+  }, [artifact.id]);
 
   const handleDownload = () => {
     // Создаем архив всех файлов
@@ -203,6 +311,13 @@ export function WebsiteArtifactCard({ artifact, onUpdate }: WebsiteArtifactCardP
     URL.revokeObjectURL(url);
   };
 
+  const handleReloadPreview = useCallback(() => {
+    setPreviewError("");
+    setSandpackError("");
+    setIsPreviewLoading(true);
+    setPreviewKey(prev => prev + 1); // Перезагружаем превью
+  }, []);
+
   return (
     <div className="mt-4 rounded-xl border-2 border-primary/20 bg-gradient-to-br from-background to-secondary/10 p-4 shadow-lg">
       {/* Header */}
@@ -219,29 +334,29 @@ export function WebsiteArtifactCard({ artifact, onUpdate }: WebsiteArtifactCardP
           </div>
         </div>
 
-        {/* Переключатель режимов просмотра */}
-        <div className="flex items-center gap-1 bg-secondary rounded-lg p-1">
-          <Button
-            variant={viewMode === "code" ? "default" : "ghost"}
-            size="sm"
-            onClick={() => setViewMode("code")}
-            className="h-7 px-3"
-          >
-            <Code className="h-3 w-3 mr-1" />
-            Код
-          </Button>
-          <Button
-            variant={viewMode === "preview" ? "default" : "ghost"}
-            size="sm"
-            onClick={() => setViewMode("preview")}
-            className="h-7 px-3"
-          >
-            <Eye className="h-3 w-3 mr-1" />
-            Превью
-          </Button>
-        </div>
-
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleReloadPreview}
+            className="h-8"
+            title="Перезагрузить превью"
+          >
+            <Play className="h-4 w-4 mr-1" />
+            Обновить превью
+          </Button>
+          {isVanillaSite && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setUseSimplePreview(prev => !prev)}
+              className="h-8"
+              title={useSimplePreview ? "Переключить на Sandpack превью" : "Переключить на простой превью"}
+            >
+              <Eye className="h-4 w-4 mr-1" />
+              {useSimplePreview ? "Sandpack" : "Простой"} превью
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"
@@ -252,140 +367,97 @@ export function WebsiteArtifactCard({ artifact, onUpdate }: WebsiteArtifactCardP
             <Download className="h-4 w-4 mr-1" />
             Скачать проект
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleCopy}
-            className="h-8"
-            title="Копировать все файлы"
-          >
-            {copied ? (
-              <>
-                <Check className="h-4 w-4 mr-1 text-green-500" />
-                Скопировано
-              </>
-            ) : (
-              <>
-                <Copy className="h-4 w-4 mr-1" />
-                Копировать все
-              </>
-            )}
-          </Button>
         </div>
       </div>
 
-      {/* Code/Preview Viewer */}
-      {viewMode === "preview" ? (
-        /* Sandpack Preview */
-        <div className="rounded-lg overflow-hidden border border-border shadow-inner">
-          {sandpackError ? (
+      {/* Preview Viewer */}
+        <div className="relative rounded-lg overflow-hidden border border-border shadow-inner" style={{ isolation: 'isolate' }}>
+          {isPreviewLoading && !sandpackError && !previewError && (
+            <div className="absolute top-2 right-2 z-10">
+              <div className="flex items-center gap-2 bg-background/80 backdrop-blur-sm rounded px-2 py-1 text-xs">
+                <div className="animate-spin h-3 w-3 border border-primary border-t-transparent rounded-full"></div>
+                <span>Загрузка превью...</span>
+                <button
+                  onClick={() => {
+                    setPreviewError('Превью остановлено пользователем');
+                    setIsPreviewLoading(false);
+                  }}
+                  className="text-red-500 hover:text-red-700 ml-1"
+                  title="Остановить загрузку"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          )}
+          {sandpackError || previewError ? (
             <div className="p-4 text-center text-red-500 dark:text-red-400">
               <AlertTriangle className="h-8 w-8 mx-auto mb-2" />
-              <p className="text-sm">{sandpackError}</p>
+              <p className="text-sm">{sandpackError || previewError}</p>
+            </div>
+          ) : useSimplePreview && isVanillaSite ? (
+            // Простой iframe превью для vanilla сайтов
+            <div className="h-[420px] bg-white">
+              <iframe
+                key={previewKey} // Для перезагрузки превью
+                title="website-preview"
+                srcDoc={buildPreviewSrcDoc(artifact.files)}
+                sandbox="allow-scripts"
+                style={{ width: "100%", height: "100%", border: 0 }}
+                onLoad={() => {
+                  setIsPreviewLoading(false);
+                  setPreviewError(""); // Очищаем ошибки при успешной загрузке
+                }}
+                onError={() => {
+                  setPreviewError('Ошибка загрузки простого превью');
+                  setIsPreviewLoading(false);
+                }}
+              />
             </div>
           ) : (
-            <Sandpack
-              template="vite-react-ts"
-              files={toSandpackFiles(artifact.files)}
-              customSetup={{
+            <SandpackProvider
+              key={previewKey}
+              template={isVanillaSite ? "static" : "vite-react-ts"}
+              files={sandpackFiles}
+              customSetup={!isVanillaSite ? {
                 dependencies: {
                   "esbuild-wasm": "^0.21.5",
                 },
-              }}
+              } : {}}
               options={{
-                showNavigator: true,
-                showTabs: true,
-                showLineNumbers: true,
-                editorHeight: 420,
-                showConsole: true,
-                showConsoleButton: true
+                // Для static режима сразу открываем index.html
+                activeFile: isVanillaSite ? "/index.html" : undefined,
               }}
               theme="dark"
-            />
+            >
+              <SandpackLayout>
+                <SandpackCodeEditor
+                  showTabs={true}
+                  showLineNumbers={true}
+                  showRunButton={false}
+                  style={{ height: 420 }}
+                />
+                <SandpackPreview
+                  showOpenInCodeSandbox={false}
+                  showOpenNewtab={false}
+                  iframeProps={{
+                    sandbox: "allow-scripts allow-same-origin allow-forms allow-modals allow-downloads",
+                    allow: "fullscreen",
+                    allowFullScreen: true,
+                    referrerPolicy: "no-referrer",
+                    loading: "lazy",
+                  }}
+                  style={{ height: 420 }}
+                />
+              </SandpackLayout>
+            </SandpackProvider>
           )}
         </div>
-      ) : (
-        /* Code Viewer */
-        <div className="rounded-lg overflow-hidden border border-border shadow-inner bg-slate-50 dark:bg-slate-900">
-          <div className="flex border-b border-border">
-            {Object.keys(artifact.files).map((filePath) => (
-              <button
-                key={filePath}
-                onClick={() => setSelectedFile(filePath)}
-                className={`px-4 py-2 text-sm font-medium border-r border-border last:border-r-0 transition-colors ${
-                  selectedFile === filePath
-                    ? 'bg-blue-500 text-white'
-                    : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
-                }`}
-              >
-                {filePath.split('/').pop()}
-              </button>
-            ))}
-          </div>
-
-          <div className="p-4">
-            {selectedFile && artifact.files[selectedFile] ? (
-              <div>
-                <div className="flex items-center justify-between mb-3">
-                  <h4 className="text-sm font-medium text-slate-700 dark:text-slate-300">
-                    {selectedFile}
-                  </h4>
-                  <div className="flex gap-2">
-                    <Button
-                      onClick={() => {
-                        const code = artifact.files[selectedFile];
-                        navigator.clipboard.writeText(code).then(() => {
-                          setCopied(true);
-                          setTimeout(() => setCopied(false), 2000);
-                        });
-                      }}
-                      variant="outline"
-                      size="sm"
-                      className="h-7"
-                    >
-                      {copied ? (
-                        <Check className="h-3 w-3 text-green-500" />
-                      ) : (
-                        <Copy className="h-3 w-3" />
-                      )}
-                    </Button>
-                    <Button
-                      onClick={() => {
-                        const blob = new Blob([artifact.files[selectedFile]], { type: 'text/plain' });
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = selectedFile.split('/').pop() || 'file.txt';
-                        a.click();
-                        URL.revokeObjectURL(url);
-                      }}
-                      variant="outline"
-                      size="sm"
-                      className="h-7"
-                    >
-                      <Download className="h-3 w-3" />
-                    </Button>
-                  </div>
-                </div>
-
-                <pre className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded-md p-4 overflow-x-auto text-sm font-mono text-slate-800 dark:text-slate-200 max-h-96 overflow-y-auto">
-                  <code>{artifact.files[selectedFile]}</code>
-                </pre>
-              </div>
-            ) : (
-              <div className="text-center py-8 text-slate-500 dark:text-slate-400">
-                <Code className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                <p>Выберите файл для просмотра</p>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
 
       {/* Footer */}
       <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
         <div className="flex items-center gap-4">
-          <span>📝 Просмотр и редактирование кода</span>
+          <span>🌐 Превью сайта</span>
           {artifact.deps && Object.keys(artifact.deps).length > 0 && (
             <span>📦 {Object.keys(artifact.deps).length} зависимостей</span>
           )}

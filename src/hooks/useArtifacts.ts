@@ -18,8 +18,9 @@ export const useArtifacts = (): UseArtifactsReturn => {
   const loadArtifact = useCallback(async (artifactId: number): Promise<Artifact | null> => {
     try {
       // Проверяем, есть ли уже артефакт в кэше
-      if (artifacts.has(artifactId)) {
-        return artifacts.get(artifactId)!;
+      const cachedArtifact = artifacts.get(artifactId);
+      if (cachedArtifact) {
+        return cachedArtifact;
       }
 
       setIsLoading(true);
@@ -33,7 +34,7 @@ export const useArtifacts = (): UseArtifactsReturn => {
     } finally {
       setIsLoading(false);
     }
-  }, [artifacts]);
+  }, []); // Убрали зависимость от artifacts, используем замыкание
 
   const loadArtifacts = useCallback(async (artifactIds: number[]): Promise<void> => {
     if (artifactIds.length === 0) return;
@@ -46,7 +47,10 @@ export const useArtifacts = (): UseArtifactsReturn => {
         id => !artifacts.has(id)
       );
 
-      if (uniqueArtifactIds.length === 0) return;
+      if (uniqueArtifactIds.length === 0) {
+        setIsLoading(false);
+        return;
+      }
 
       // Загружаем все незагруженные артефакты параллельно
       const loadPromises = uniqueArtifactIds.map(async (artifactId) => {
@@ -76,7 +80,7 @@ export const useArtifacts = (): UseArtifactsReturn => {
     } finally {
       setIsLoading(false);
     }
-  }, [artifacts]);
+  }, []); // Убрали зависимость от artifacts, используем замыкание
 
   const resetArtifacts = useCallback(() => {
     setArtifacts(new Map());
@@ -84,7 +88,7 @@ export const useArtifacts = (): UseArtifactsReturn => {
 
   const getArtifact = useCallback((artifactId: number): Artifact | undefined => {
     return artifacts.get(artifactId);
-  }, [artifacts]);
+  }, []); // Убрали зависимость от artifacts, используем замыкание
 
   return {
     artifacts,

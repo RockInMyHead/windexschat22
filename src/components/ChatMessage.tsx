@@ -1,7 +1,8 @@
 import React, { useMemo, useState, useRef } from "react";
 import { InlineMath, BlockMath } from 'react-katex';
-import { Copy, Volume2 } from "lucide-react";
+import { Copy, Volume2, Loader2 } from "lucide-react";
 import DataVisualization, { parseVisualizationConfig, VisualizationConfig } from "./DataVisualization";
+import { ttsClient } from "@/lib/api";
 
 // Функция выполнения JavaScript кода в изолированном контексте
 const executeJavaScript = async (code: string): Promise<string> => {
@@ -1268,7 +1269,22 @@ const ChatMessage = ({ message, selectedModel }: ChatMessageProps) => {
     position: { x: number; y: number };
   } | null>(null);
   const [isLoadingDescription, setIsLoadingDescription] = useState(false);
+
+  // TTS state
+  const [isGeneratingTTS, setIsGeneratingTTS] = useState(false);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Cleanup audio on unmount
+  React.useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+    };
+  }, []);
 
   // Функция для генерации описания слова в контексте
   const generateWordDescription = async (word: string, context: string) => {
@@ -1423,61 +1439,6 @@ const ChatMessage = ({ message, selectedModel }: ChatMessageProps) => {
     }
   };
 
-  // Функция озвучки текста через OpenAI TTS
-  const speakText = async () => {
-    if (isPlayingAudio) return;
-
-    const apiKey = import.meta.env.REACT_APP_OPENAI_API_KEY;
-    if (!apiKey) {
-      console.warn('⚠️ OpenAI API key не настроен, озвучка недоступна');
-      return;
-    }
-
-    setIsPlayingAudio(true);
-    try {
-      console.log('🔊 Начинаем озвучку текста...');
-
-      // Отправляем запрос к OpenAI TTS API
-      const response = await fetch('https://api.openai.com/v1/audio/speech', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'tts-1',
-          input: message.content,
-          voice: 'alloy', // Можно выбрать: alloy, echo, fable, onyx, nova, shimmer
-          response_format: 'mp3'
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error(`TTS API error: ${response.status}`);
-      }
-
-      // Получаем аудио данные
-      const audioBlob = await response.blob();
-      const audioUrl = URL.createObjectURL(audioBlob);
-
-      // Создаем аудио элемент и воспроизводим
-      const audio = new Audio(audioUrl);
-      audio.onended = () => {
-        setIsPlayingAudio(false);
-        URL.revokeObjectURL(audioUrl);
-      };
-      audio.onerror = () => {
-        setIsPlayingAudio(false);
-        URL.revokeObjectURL(audioUrl);
-        console.error('❌ Ошибка воспроизведения аудио');
-      };
-
-      await audio.play();
-    } catch (error) {
-      console.error('❌ Ошибка при озвучке:', error);
-      setIsPlayingAudio(false);
-    }
-  };
 
   // Функция обработки клика на слово
   const handleWordClick = async (word: string, event: React.MouseEvent, context: string) => {
@@ -1505,9 +1466,50 @@ const ChatMessage = ({ message, selectedModel }: ChatMessageProps) => {
     setTooltip(prev => prev ? { ...prev, description } : null);
   };
 
-  // TTS variables removed - using only DeepSeek models
+  // TTS functionality
+  const generateTTS = async () => {
+    if (!message.content.trim()) return;
 
-  // TTS function removed - using only DeepSeek models
+    setIsGeneratingTTS(true);
+    try {
+      // Определяем язык текста (простая эвристика)
+      const hasCyrillic = /[а-яё]/i.test(message.content);
+      const ttsFunction = hasCyrillic ? ttsClient.generateTTSRu : ttsClient.generateTTSEn;
+
+      const result = await ttsFunction(message.content);
+      setAudioUrl(result.file_url);
+
+      // Создаем аудио элемент и настраиваем обработчики
+      const audio = new Audio(result.file_url);
+      audioRef.current = audio;
+
+      audio.addEventListener('play', () => setIsPlayingAudio(true));
+      audio.addEventListener('pause', () => setIsPlayingAudio(false));
+      audio.addEventListener('ended', () => setIsPlayingAudio(false));
+      audio.addEventListener('error', () => {
+        setIsPlayingAudio(false);
+        console.error('❌ Audio playback error');
+      });
+
+      // Автоматически воспроизводим аудио
+      await audio.play();
+    } catch (error) {
+      console.error('❌ TTS generation failed:', error);
+      setIsPlayingAudio(false);
+      // Не показываем ошибку пользователю, просто логируем
+    } finally {
+      setIsGeneratingTTS(false);
+    }
+  };
+
+  const playAudio = async () => {
+    if (audioUrl && audioRef.current) {
+      audioRef.current.currentTime = 0;
+      await audioRef.current.play();
+    } else {
+      await generateTTS();
+    }
+  };
 
   // Парсим конфигурацию визуализации из текста сообщения
   const visualizationConfig = useMemo(() => {
@@ -1551,7 +1553,24 @@ const ChatMessage = ({ message, selectedModel }: ChatMessageProps) => {
           <div className="w-8 h-8 rounded-full bg-primary text-primary-foreground flex items-center justify-center font-semibold">
             AI
           </div>
-          {/* TTS removed - using only DeepSeek models */}
+          <button
+            onClick={playAudio}
+            disabled={isGeneratingTTS}
+            className="p-1 rounded hover:bg-primary/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            title={isPlayingAudio ? "Остановить воспроизведение" : "Прослушать сообщение"}
+          >
+            {isGeneratingTTS ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : isPlayingAudio ? (
+              <div className="h-4 w-4 flex items-center justify-center">
+                <div className="w-1 h-3 bg-current animate-pulse mx-0.5"></div>
+                <div className="w-1 h-2 bg-current animate-pulse mx-0.5"></div>
+                <div className="w-1 h-3 bg-current animate-pulse mx-0.5"></div>
+              </div>
+            ) : (
+              <Volume2 className="h-4 w-4" />
+            )}
+          </button>
         </div>
       )}
       <div className={`flex-1 pt-1 ${isUser ? "max-w-[70%]" : "max-w-[80%]"}`}>
@@ -1613,17 +1632,6 @@ const ChatMessage = ({ message, selectedModel }: ChatMessageProps) => {
             >
               <Copy className="w-3 h-3" />
               <span className="hidden sm:inline">Копировать</span>
-            </button>
-            <button
-              onClick={speakText}
-              disabled={isPlayingAudio}
-              className="flex items-center gap-1 px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-secondary rounded-md transition-colors disabled:opacity-50"
-              title="Озвучить текст"
-            >
-              <Volume2 className="w-3 h-3" />
-              <span className="hidden sm:inline">
-                {isPlayingAudio ? 'Воспроизведение...' : 'Озвучить'}
-              </span>
             </button>
           </div>
         )}
