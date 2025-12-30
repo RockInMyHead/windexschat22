@@ -225,7 +225,7 @@ app.use(cors({
 const isProd = process.env.NODE_ENV === "production";
 
 // Рекомендуемый writable каталог в контейнере (под volume)
-const SESSION_DIR = process.env.SESSION_DIR || "/data/sessions";
+const SESSION_DIR = process.env.SESSION_DIR || (process.env.NODE_ENV === 'production' ? "/data/sessions" : path.join(process.cwd(), "data", "sessions"));
 fs.mkdirSync(SESSION_DIR, { recursive: true });
 
 // Важно для secure cookies за reverse-proxy (nginx)
@@ -252,13 +252,20 @@ app.use(session({
 
 // Middleware для проверки аутентификации через сессии
 function requireAuth(req, res, next) {
-  if (req.method === "OPTIONS") return next(); // не блокируем preflight
+  try {
+    if (req.method === "OPTIONS") return next(); // не блокируем preflight
 
-  const userId = req.session?.userId;
-  if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const userId = req.session?.userId;
+    if (!userId) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
 
-  req.user = { id: userId };
-  next();
+    req.user = { id: userId };
+    return next();
+  } catch (e) {
+    console.error("❌ requireAuth error:", e?.stack || e);
+    return res.status(500).json({ error: "auth_middleware_failed" });
+  }
 }
 
 
@@ -2050,6 +2057,7 @@ async function performWebSearch(query) {
 
 // DeepSeek Chat API proxy
 app.post("/api/chat", requireAuth, async (req, res) => {
+  console.log("➡️ /api/chat hit", { requestId: req.body?.requestId, stream: req.body?.stream });
 
   // Таймаут на апстрим (рекомендуется, чтобы не получать подвисания и "fetch failed")
   const fetchWithTimeout = async (url, options, timeoutMs = 30000) => {
@@ -2990,18 +2998,28 @@ app.post('/api/test-market-query', (req, res) => {
   });
 });
 
+// Глобальный JSON error handler для /api (обязателен)
+app.use("/api", (err, req, res, next) => {
+  console.error("❌ Unhandled API error:", err?.stack || err);
+  if (res.headersSent) return next(err);
+  return res.status(500).json({
+    error: "internal_error",
+    message: err?.message || "Unknown error",
+  });
+});
+
 // RUM beacon fallback (prevents noisy 404 in console)
 app.get("/rum", (req, res) => res.status(204).end());
 app.post("/rum", (req, res) => res.status(204).end());
 app.all(/^\/rum(\/.*)?$/, (req, res) => res.status(204).end());
 
-// Serve static files from dist directory
-app.use(express.static(path.join(__dirname, 'dist')));
-
 // Test route
 app.get('/api/test', (req, res) => {
   res.json({ message: 'Test route works' });
 });
+
+// Serve static files from dist directory
+app.use(express.static(path.join(__dirname, 'dist')));
 
 // Add no-cache headers for index.html to ensure fresh JS loading
 app.use((req, res, next) => {

@@ -15,6 +15,11 @@ export const ChatSession = {
 const DB_DIR = process.env.DB_DIR || path.join(process.cwd(), "data");
 const DB_PATH = process.env.DB_PATH || path.join(DB_DIR, "windexs_chat.db");
 
+// Для локальной разработки создаем директорию, если NODE_ENV не production
+if (process.env.NODE_ENV !== 'production') {
+  fs.mkdirSync(DB_DIR, { recursive: true });
+}
+
 // ВАЖНО: создать директорию под DB_PATH перед открытием БД
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
