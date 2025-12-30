@@ -1,6 +1,48 @@
 // API base URL - use environment variable for production
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
 
+// Proxy configuration
+const PROXY_URL = import.meta.env.VITE_PROXY_URL || 'socks5://7BwWCS:BBBvb6@185.68.186.158:8000';
+
+// Create proxy agent for fetch
+const createProxyFetch = () => {
+  if (typeof window !== 'undefined') {
+    // Browser environment - use native fetch
+    return fetch;
+  }
+
+  // Node.js environment - use proxy agent
+  try {
+    const { SocksProxyAgent } = require('socks-proxy-agent');
+    const { HttpsProxyAgent } = require('https-proxy-agent');
+
+    if (PROXY_URL.startsWith('socks')) {
+      const agent = new SocksProxyAgent(PROXY_URL);
+      return (url: RequestInfo | URL, options?: RequestInit) => {
+        return fetch(url, {
+          ...options,
+          // @ts-ignore - agent is not in standard fetch options
+          agent
+        });
+      };
+    } else {
+      const agent = new HttpsProxyAgent(PROXY_URL);
+      return (url: RequestInfo | URL, options?: RequestInit) => {
+        return fetch(url, {
+          ...options,
+          // @ts-ignore - agent is not in standard fetch options
+          agent
+        });
+      };
+    }
+  } catch (error) {
+    console.warn('Proxy agent not available, using regular fetch:', error);
+    return fetch;
+  }
+};
+
+const proxyFetch = createProxyFetch();
+
 export interface Message {
   id?: number;
   role: 'user' | 'assistant';
@@ -206,7 +248,7 @@ class OpenAITTSClient {
     speed?: number;
   } = {}): Promise<{ audioUrl: string; duration?: number }> {
     try {
-      const response = await fetch('https://api.openai.com/v1/audio/speech', {
+      const response = await proxyFetch('https://api.openai.com/v1/audio/speech', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${this.apiKey}`,
