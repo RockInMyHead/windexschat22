@@ -23,7 +23,7 @@ export default defineConfig(() => ({
       // Only proxy in development, production uses VITE_API_BASE_URL
       ...(process.env.NODE_ENV !== 'production' ? {
         '/api': {
-          target: 'http://localhost:80',
+          target: 'https://ai.windexs.ru',
           changeOrigin: true,
         },
       } : {}),
