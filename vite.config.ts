@@ -11,16 +11,21 @@ export default defineConfig(() => ({
     strictPort: false,
     allowedHosts: [
       'localhost',
-      '127.0.0.1'
+      '127.0.0.1',
+      'ai.windexs.ru',
+      'www.ai.windexs.ru'
     ],
     hmr: {
       overlay: false, // Disable error overlay on mobile
     },
     proxy: {
-      '/api': {
-        target: 'http://localhost:80',
-        changeOrigin: true,
-      },
+      // Only proxy in development, production uses VITE_API_BASE_URL
+      ...(process.env.NODE_ENV !== 'production' ? {
+        '/api': {
+          target: 'http://localhost:80',
+          changeOrigin: true,
+        },
+      } : {}),
     },
   },
   plugins: [react()],

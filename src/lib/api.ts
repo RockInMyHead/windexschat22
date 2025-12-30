@@ -1,5 +1,5 @@
-// Use relative path for API - works on any domain
-export const API_BASE_URL = '/api';
+// API base URL - use environment variable for production
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
 
 export interface Message {
   id?: number;
