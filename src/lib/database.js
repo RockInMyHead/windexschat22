@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import path from 'path';
+import fs from 'fs';
 
 // Определяем интерфейсы для TypeScript
 export const Message = {
@@ -13,6 +14,9 @@ export const ChatSession = {
 // Writable директория под БД (должна совпадать с server.js)
 const DB_DIR = process.env.DB_DIR || path.join(process.cwd(), "data");
 const DB_PATH = process.env.DB_PATH || path.join(DB_DIR, "windexs_chat.db");
+
+// ВАЖНО: создать директорию под DB_PATH перед открытием БД
+fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
 // Инициализация базы данных
 const db = new Database(DB_PATH);
