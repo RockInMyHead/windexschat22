@@ -10,8 +10,9 @@ export const ChatSession = {
   // Just for reference, actual validation happens in code
 };
 
-// Путь к файлу базы данных
-const DB_PATH = path.join(process.cwd(), 'windexs_chat.db');
+// Writable директория под БД (должна совпадать с server.js)
+const DB_DIR = process.env.DB_DIR || path.join(process.cwd(), "data");
+const DB_PATH = process.env.DB_PATH || path.join(DB_DIR, "windexs_chat.db");
 
 // Инициализация базы данных
 const db = new Database(DB_PATH);

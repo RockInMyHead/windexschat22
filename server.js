@@ -95,6 +95,7 @@ import Database from 'better-sqlite3';
 import JSON5 from 'json5';
 import session from "express-session";
 import SQLiteStoreFactory from "connect-sqlite3";
+import fs from "fs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -190,8 +191,13 @@ const PORT = process.env.PORT || 1062;
 
 const SQLiteStore = SQLiteStoreFactory(session);
 
+// Writable директория под БД (в контейнере её нужно примонтировать volume'ом)
+const DB_DIR = process.env.DB_DIR || path.join(process.cwd(), "data");
+fs.mkdirSync(DB_DIR, { recursive: true });
+
+const DB_PATH = process.env.DB_PATH || path.join(DB_DIR, "windexs_chat.db");
+
 // Локальная БД для prepared statements
-const DB_PATH = path.join(process.cwd(), 'windexs_chat.db');
 const db = new Database(DB_PATH);
 const checkSessionOwnerStmt = db.prepare(`
   SELECT 1 FROM chat_sessions WHERE id = ? AND user_id = ?
