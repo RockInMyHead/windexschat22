@@ -223,6 +223,15 @@ app.use(cors({
 // Session middleware
 const isProd = process.env.NODE_ENV === "production";
 
+// Рекомендуемый writable каталог в контейнере (под volume)
+const SESSION_DIR = process.env.SESSION_DIR || "/data/sessions";
+fs.mkdirSync(SESSION_DIR, { recursive: true });
+
+// Важно для secure cookies за reverse-proxy (nginx)
+if (isProd) {
+  app.set("trust proxy", 1);
+}
+
 app.use(session({
   name: "sid",
   secret: process.env.SESSION_SECRET || "dev_secret_change_me",
@@ -230,7 +239,7 @@ app.use(session({
   saveUninitialized: false,
   store: new SQLiteStore({
     db: "http_sessions.sqlite",
-    dir: path.join(process.cwd(), "db"),
+    dir: SESSION_DIR,
   }),
   cookie: {
     httpOnly: true,
