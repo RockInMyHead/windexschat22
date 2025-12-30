@@ -13,7 +13,8 @@ export default defineConfig(() => ({
       'localhost',
       '127.0.0.1',
       'ai.windexs.ru',
-      'www.ai.windexs.ru'
+      'www.ai.windexs.ru',
+      'cute-elliot-distinctively.ngrok-free.dev'
     ],
     hmr: {
       overlay: false, // Disable error overlay on mobile
