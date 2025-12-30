@@ -62,8 +62,8 @@ async function executeWebsiteStream(
 
     // ⏰ таймер теперь тоже safe
     const timeout = setTimeout(() => {
-      safeReject(new Error('Website generation timeout (5 minutes)'));
-    }, 5 * 60 * 1000);
+      safeReject(new Error('Website generation timeout (10 minutes)'));
+    }, 10 * 60 * 1000);
 
     try {
       const response = await fetch('/api/website/execute', {
