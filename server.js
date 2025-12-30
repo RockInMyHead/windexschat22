@@ -5,6 +5,63 @@ import { ProxyAgent } from 'undici';
 import dns from 'node:dns/promises';
 import { DatabaseService } from './src/lib/database.js';
 
+// Функция для генерации превью HTML с инлайновыми ресурсами
+function buildPreviewSrcDoc(rawFiles) {
+  // normalizeFiles function inline
+  const normalizeFiles = (files) => {
+    const out = {};
+    for (const [k, v] of Object.entries(files || {})) {
+      const key = k.replace(/^\/+/, "");
+      out[key] = String(v ?? "");
+      out["/" + key] = String(v ?? "");
+    }
+    return out;
+  };
+
+  const f = normalizeFiles(rawFiles);
+  const html = (f["index.html"] || f["/index.html"] || "").trim();
+  const css = f["styles.css"] || f["/styles.css"] || "";
+  const js = f["app.js"] || f["/app.js"] || "";
+
+  if (!html) {
+    return `<!doctype html><html><body><pre style="padding:16px;color:#b00">
+index.html not found in artifact.files
+Keys: ${(rawFiles ? Object.keys(rawFiles) : []).join(", ")}
+</pre></body></html>`;
+  }
+
+  let out = html;
+
+  // 1) base (чтобы якоря/ссылки не ломались)
+  if (!/<base\b/i.test(out)) {
+    out = out.replace(/<head[^>]*>/i, (m) => `${m}\n<base href="/" />`);
+  }
+
+  // 2) CSS: заменить <link ...styles.css> на <style>...</style> (или вставить в </head>)
+  if (/<link[^>]+href=["']\/?styles\.css["'][^>]*>/i.test(out)) {
+    out = out.replace(
+      /<link[^>]+href=["']\/?styles\.css["'][^>]*>\s*/i,
+      `<style>\n${css}\n</style>\n`
+    );
+  } else {
+    out = out.replace(/<\/head>/i, `<style>\n${css}\n</style>\n</head>`);
+  }
+
+  // 3) JS: инлайн + try/catch, чтобы вместо белого экрана вы видели stacktrace
+  const safeJs = `try {\n${js}\n} catch (e) {\n  console.error(e);\n  document.body.innerHTML = '<pre style="padding:16px;color:#b00;white-space:pre-wrap">' + (e && e.stack ? e.stack : String(e)) + '</pre>';\n}\n`;
+
+  if (/<script[^>]+src=["']\/?app\.js["'][^>]*>\s*<\/script>/i.test(out)) {
+    out = out.replace(
+      /<script[^>]+src=["']\/?app\.js["'][^>]*>\s*<\/script>/i,
+      `<script>\n${safeJs}\n</script>`
+    );
+  } else {
+    out = out.replace(/<\/body>/i, `<script>\n${safeJs}\n</script>\n</body>`);
+  }
+
+  return out;
+}
+
 // Единая модель проекта (1 источник правды)
 const MODEL = "deepseek-chat";
 
@@ -20,8 +77,8 @@ const PLAN_PARAMS = {
 };
 
 const ARTIFACT_PARAMS = {
-  max_tokens: 4000,
-  temperature: 0.2,
+  max_tokens: 8000, // Уменьшаем для стабильности JSON парсинга
+  temperature: 0.3,
 };
 
 // Явно инициализируем базу данных при запуске сервера
@@ -150,8 +207,7 @@ app.use(cors({
     "https://www.ai.windexs.ru",
     "http://ai.windexs.ru",
     "http://www.ai.windexs.ru",
-    "http://127.0.0.1:8081",
-    "https://cute-elliot-distinctively.ngrok-free.dev", // ← ОБЯЗАТЕЛЬНО добавить ваш ngrok
+    "http://127.0.0.1:8081"
   ],
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
@@ -1399,7 +1455,7 @@ app.get('/api/artifacts/:artifactId', (req, res) => {
   try {
     const { artifactId } = req.params;
     const artifact = DatabaseService.getArtifact(parseInt(artifactId));
-    
+
     if (!artifact) {
       return res.status(404).json({ error: 'Artifact not found' });
     }
@@ -1408,6 +1464,39 @@ app.get('/api/artifacts/:artifactId', (req, res) => {
   } catch (error) {
     console.error('Error getting artifact:', error);
     res.status(500).json({ error: 'Failed to get artifact' });
+  }
+});
+
+// Получить превью артефакта (серверный рендер для vanilla сайтов)
+app.get('/api/artifacts/:artifactId/preview', (req, res) => {
+  try {
+    const { artifactId } = req.params;
+    const artifact = DatabaseService.getArtifact(parseInt(artifactId));
+
+    if (!artifact) {
+      return res.status(404).send('<!doctype html><html><body><pre style="padding:16px;color:#b00">Artifact not found</pre></body></html>');
+    }
+
+    // Определяем тип артефакта (vanilla сайт)
+    const isVanillaSite = Boolean(
+      artifact.files["/index.html"] &&
+      artifact.files["/styles.css"] &&
+      artifact.files["/app.js"]
+    );
+
+    if (!isVanillaSite) {
+      return res.status(400).send('<!doctype html><html><body><pre style="padding:16px;color:#b00">Preview only available for vanilla websites (HTML/CSS/JS)</pre></body></html>');
+    }
+
+    // Генерируем превью HTML с инлайновыми ресурсами
+    const previewHtml = buildPreviewSrcDoc(artifact.files);
+
+    // Отправляем как HTML документ
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(previewHtml);
+  } catch (error) {
+    console.error('Error generating artifact preview:', error);
+    res.status(500).send('<!doctype html><html><body><pre style="padding:16px;color:#b00">Failed to generate preview</pre></body></html>');
   }
 });
 
@@ -2476,66 +2565,31 @@ ${webSearchResult}`,
 // === Website Execution API ===
 
 // Planner: генерирует план шагов для создания сайта
+// Детерминированный план - всегда одинаковый для надежности
+function makeTitleFromPrompt(prompt) {
+  return String(prompt || "Website")
+    .replace(/["']/g, "")        // убираем кавычки
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 60) || "Website";
+}
+
 async function planWebsite(prompt) {
-  const systemPrompt = `Ты планируешь создание статического сайта БЕЗ фреймворков.
-Ответь ТОЛЬКО валидным JSON без markdown.
-
-КРИТИЧНО:
-- steps ДОЛЖЕН содержать РОВНО 3 элемента и ТОЛЬКО эти файлы:
-  1) index.html
-  2) styles.css
-  3) app.js
-- Запрещено добавлять любые другие файлы (about.html, contact.html и т.п.)
-- deps всегда {}.
-
-Формат:
-{
-  "title": "Название сайта",
-  "deps": {},
-  "steps": [
-    { "id": "index", "tool": "create_file", "file": "index.html", "description": "Главная страница" },
-    { "id": "styles", "tool": "create_file", "file": "styles.css", "description": "Стили" },
-    { "id": "app", "tool": "create_file", "file": "app.js", "description": "JavaScript логика" }
-  ]
-}`;
-
-  const resp = await fetch("https://api.deepseek.com/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${process.env.DEEPSEEK_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: `Создай план для сайта: ${prompt}` }
-      ],
-      response_format: { type: "json_object" },
-      ...PLAN_PARAMS
-    })
-  });
-
-  const data = await resp.json();
-  const raw = data?.choices?.[0]?.message?.content;
-
-  if (!raw) throw new Error("No response from planner");
-
-  try {
-    const plan = JSON.parse(raw);
-    // Валидация плана
-    if (!plan.title || !plan.steps || !Array.isArray(plan.steps)) {
-      throw new Error("Invalid plan structure");
-    }
-    return plan;
-  } catch (e) {
-    throw new Error(`Failed to parse plan: ${e.message}`);
-  }
+  return {
+    title: makeTitleFromPrompt(prompt),
+    deps: {},
+    steps: [
+      { id: "index",  tool: "create_file", file: "index.html",  description: "Главная страница" },
+      { id: "styles", tool: "create_file", file: "styles.css",  description: "Стили" },
+      { id: "app",    tool: "create_file", file: "app.js",      description: "JavaScript логика" },
+    ],
+  };
 }
 
 // Executor: выполняет отдельный шаг
 async function executeStep(step, context = {}) {
   if (step.tool === "create_file") {
+    // Генерируем файл через LLM с учетом контекста плана
     const content = await generateFile(step.file, context);
     return { file: { name: step.file, content } };
   }
@@ -2544,41 +2598,69 @@ async function executeStep(step, context = {}) {
 
 // Генератор файла: создает содержимое файла через LLM
 async function generateFile(filename, context = {}) {
-  const filePrompts = {
-    "index.html": `Создай HTML-файл для статического сайта.
+  const { plan, prompt } = context;
+
+  // Создаем специфичный промт для каждого типа файла
+  let systemPrompt;
+  let userPrompt;
+
+  if (filename === "index.html") {
+    systemPrompt = `Создай один HTML-файл одностраничного сайта по теме: «${prompt}».
 Требования:
-- Валидный HTML5
-- Подключи styles.css и app.js
-- Используй семантические теги
-- Адаптивный дизайн (viewport meta)
-- Минимум 3 секции контента
-- Чистый, читаемый код
+Верни ТОЛЬКО HTML-код (без markdown/пояснений).
+Валидный HTML5: <!doctype html>, lang, meta charset, meta viewport.
+Подключи styles.css и app.js (defer).
+Семантика: header, main, section, footer. Один h1, далее h2.
+Без внешних CDN/шрифтов/картинок; допустимы inline SVG и CSS-градиенты. Должно работать в iframe sandbox.
+Структура (обязательные id):
+header#site-header: nav#primary-nav с логотипом, якорными ссылками на секции, button#nav-toggle (aria-expanded), button#theme-toggle.
+main#main:
+section#hero: заголовок, текст, 2 CTA-кнопки (.btn.primary, .btn.ghost).
+section#features: 6+ карточек .card (h3 + текст).
+section#showcase: табы .tabs с кнопками .tab и панелями .tab-panel.
+section#pricing: 3 тарифа .pricing-grid, один .featured.
+section#faq: accordion .accordion (кнопки .accordion-trigger + панели).
+section#contact: form#contact-form (name, email, topic select, message textarea, consent checkbox) + div#form-status.
+footer#site-footer.
+button#to-top и div#toast (для уведомлений).
+Контент — конкретный под запрос пользователя, без «lorem ipsum».`;
+    userPrompt = `Создай HTML для сайта: ${prompt}`;
 
-Верни ТОЛЬКО HTML-код, без markdown, без объяснений.`,
-
-    "styles.css": `Создай CSS-файл для статического сайта.
+  } else if (filename === "styles.css") {
+    systemPrompt = `Создай CSS для сайта по теме «${prompt}», соответствующий структуре/селектором из HTML выше.
 Требования:
-- Современный дизайн
-- Адаптивность (mobile-first)
-- Красивые цвета и типографика
-- Минимум 5 CSS-свойств
-- Чистый код без фреймворков
+Верни ТОЛЬКО CSS-код (без markdown/пояснений).
+Mobile-first, адаптивно (2–3 брейкпоинта).
+Премиальный UI: градиентный фон + glass/blur, аккуратные тени, современная типографика, spacing.
+Используй CSS variables в :root (цвета, радиусы, тени, spacing). Поддержи [data-theme="dark"].
+Обязательные состояния: :hover, :active, :focus-visible для ссылок/кнопок/полей.
+prefers-reduced-motion (минимизировать анимации).
+Стилизуй ключевые блоки: #site-header, навигация и мобильное меню (.nav-open), #hero, .btn, .card, .tabs/.tab/.tab-panel, .pricing-grid/.featured, .accordion, форма и aria-invalid, #toast, #to-top.`;
+    userPrompt = `Создай стили для сайта: ${prompt}`;
 
-Верни ТОЛЬКО CSS-код, без markdown, без объяснений.`,
-
-    "app.js": `Создай JavaScript-файл для статического сайта.
+  } else if (filename === "app.js") {
+    systemPrompt = `Создай JavaScript (vanilla) для сайта по теме «${prompt}», под селекторы из HTML.
 Требования:
-- Vanilla JavaScript (без фреймворков)
-- Минимум 3 интерактивных функции
-- Обработка событий
-- Работа с DOM
-- Чистый код без import/export
+Верни ТОЛЬКО JS-код (без markdown/пояснений).
+Без библиотек, без внешних запросов, совместимо с iframe sandbox.
+try/catch для рискованных блоков, проверки на наличие элементов.
+Минимум 60 строк реальной логики.
+Функции (обязательно):
+Мобильное меню: #nav-toggle переключает .nav-open, обновляет aria-expanded, закрытие по Escape и по клику на ссылку.
+Smooth-scroll по якорям (scrollIntoView).
+Табы в #showcase: .tab переключает .tab-panel, aria-selected.
+Accordion в #faq: .accordion-trigger раскрывает/сворачивает панели, aria-expanded.
+Форма #contact-form: базовая валидация (required/email/consent), aria-invalid, статус в #form-status, toast через #toast.
+Scroll поведение: показать/скрыть #to-top и плавный скролл наверх.`;
+    userPrompt = `Создай JavaScript логику для сайта: ${prompt}`;
+  }
 
-Верни ТОЛЬКО JavaScript-код, без markdown, без объяснений.`
-  };
+  const messages = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: userPrompt }
+  ];
 
-  const prompt = filePrompts[filename];
-  if (!prompt) {
+  if (!systemPrompt) {
     throw new Error(`Unknown file type: ${filename}`);
   }
 
@@ -2590,10 +2672,7 @@ async function generateFile(filename, context = {}) {
     },
     body: JSON.stringify({
       model: MODEL,
-      messages: [
-        { role: "system", content: "Ты создаешь файлы для статического сайта. Отвечай только кодом файла, без объяснений и markdown." },
-        { role: "user", content: prompt }
-      ],
+      messages: messages,
       ...ARTIFACT_PARAMS
     })
   });

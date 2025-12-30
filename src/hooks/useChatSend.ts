@@ -156,6 +156,7 @@ interface UseChatSendOptions {
   onPlanningUpdate: (plan: PlanStep[], currentStep: number, isPlanning: boolean) => void;
   onSearchProgress: (queries: string[]) => void;
   onTokenCost: (cost: TokenCost) => void;
+  onBalanceUpdate?: () => void;
   onScrollToBottom: () => void;
 }
 
@@ -182,6 +183,7 @@ export const useChatSend = ({
   onPlanningUpdate,
   onSearchProgress,
   onTokenCost,
+  onBalanceUpdate,
   onScrollToBottom,
 }: UseChatSendOptions): UseChatSendReturn => {
   const [isLoading, setIsLoading] = useState(false);
@@ -661,6 +663,12 @@ export const useChatSend = ({
       if (finalAssistantText.length > 0) {
         await apiClient.saveMessage(sid, "assistant", finalAssistantText);
 
+        // ✅ Обновляем баланс после успешного ответа (списание средств на сервере)
+        if (onBalanceUpdate) {
+          console.log('🔄 Updating balance after successful response...');
+          onBalanceUpdate();
+        }
+
         // ✅ Очищаем состояния планирования и thinking messages после успешного ответа
         onThinkingUpdate([]);
         onPlanningUpdate([], -1, false);
@@ -681,6 +689,38 @@ export const useChatSend = ({
       // ✅ Фильтруем ReferenceError — не показываем в чате
       if (error.name === 'ReferenceError' || error.message?.includes("Can't find variable")) {
         console.error('ReferenceError suppressed in UI:', error);
+        return;
+      }
+
+      // ✅ Специальная обработка нехватки средств (ошибка 402)
+      if (error?.status === 402 || error?.message?.includes('Insufficient funds') || error?.message?.includes('insufficient_funds')) {
+        console.log('💰 Insufficient funds detected, showing balance update message');
+        const balanceMessage = '💰 Недостаточно средств для отправки сообщения. Пожалуйста, пополните баланс в разделе "Кошелёк".';
+        onMessageUpdate(prev => [...prev, {
+          role: 'assistant',
+          content: balanceMessage,
+          timestamp: Date.now()
+        }]);
+
+        // Обновляем баланс в UI
+        if (onBalanceUpdate) {
+          onBalanceUpdate();
+        }
+
+        // Сохраняем сообщение о нехватке средств
+        if (sessionIdToUse) {
+          const errorSid = Number(sessionIdToUse);
+          try {
+            await apiClient.saveMessage(errorSid, 'assistant', balanceMessage);
+          } catch (saveError) {
+            console.error('Failed to save balance message:', saveError);
+          }
+        }
+
+        // ✅ Очищаем состояния планирования при ошибке
+        onThinkingUpdate([]);
+        onPlanningUpdate([], -1, false);
+        onSearchProgress([]);
         return;
       }
 

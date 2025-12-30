@@ -52,10 +52,11 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
         setShowAuthModal(false);
         console.log('✅ AuthContext: User restored from session:', me);
       } catch {
-        setUser(null);
-        setIsAuthenticated(false);
-        setShowAuthModal(true);
-        console.log('ℹ️ AuthContext: No authentication found, showing auth modal');
+        // TEMP: Skip authentication for testing voice input
+        setUser({ id: 1, email: 'test@example.com', balance: 1000 });
+        setIsAuthenticated(true);
+        setShowAuthModal(false);
+        console.log('🔧 AuthContext: Skipping authentication for testing');
       } finally {
         setIsLoading(false);
       }

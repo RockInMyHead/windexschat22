@@ -30,7 +30,7 @@ export function useFixSandpackFullscreen() {
   }, []);
 }
 import { Button } from "@/components/ui/button";
-import { Copy, Check, Code, Eye, Download, AlertTriangle, Play } from "lucide-react";
+import { Copy, Check, Code, Download, AlertTriangle, Play } from "lucide-react";
 import {
   SandpackProvider,
   SandpackLayout,
@@ -203,7 +203,6 @@ export function WebsiteArtifactCard({ artifact, onUpdate }: WebsiteArtifactCardP
   const [previewError, setPreviewError] = useState<string>("");
   const [previewKey, setPreviewKey] = useState<number>(0); // Для перезагрузки превью
   const [isPreviewLoading, setIsPreviewLoading] = useState<boolean>(false);
-  const [useSimplePreview, setUseSimplePreview] = useState<boolean>(false); // Переключатель режима превью
 
   // Исправление fullscreen в Sandpack Preview
   useFixSandpackFullscreen();
@@ -248,17 +247,14 @@ export function WebsiteArtifactCard({ artifact, onUpdate }: WebsiteArtifactCardP
         setTimeout(() => {
           const iframes = document.querySelectorAll('iframe[title*="Sandpack"]');
           iframes.forEach((iframe) => {
-            const currentSandbox = iframe.getAttribute('sandbox') || '';
-            if (currentSandbox.includes('allow-presentation')) {
-              iframe.setAttribute('sandbox', [
-                'allow-scripts', 'allow-same-origin', 'allow-forms',
-                'allow-modals', 'allow-downloads'
-              ].join(' '));
-            }
-            iframe.removeAttribute('allow');
-            iframe.removeAttribute('allowfullscreen');
+            iframe.setAttribute(
+              "sandbox",
+              "allow-scripts allow-same-origin allow-forms allow-modals allow-downloads"
+            );
+            iframe.setAttribute("allow", "fullscreen");
+            (iframe as any).allowFullscreen = true;
           });
-        }, 2000);
+        }, 500);
       };
 
       window.addEventListener('error', handleSandpackError);
@@ -345,18 +341,6 @@ export function WebsiteArtifactCard({ artifact, onUpdate }: WebsiteArtifactCardP
             <Play className="h-4 w-4 mr-1" />
             Обновить превью
           </Button>
-          {isVanillaSite && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setUseSimplePreview(prev => !prev)}
-              className="h-8"
-              title={useSimplePreview ? "Переключить на Sandpack превью" : "Переключить на простой превью"}
-            >
-              <Eye className="h-4 w-4 mr-1" />
-              {useSimplePreview ? "Sandpack" : "Простой"} превью
-            </Button>
-          )}
           <Button
             variant="outline"
             size="sm"
@@ -395,7 +379,7 @@ export function WebsiteArtifactCard({ artifact, onUpdate }: WebsiteArtifactCardP
               <AlertTriangle className="h-8 w-8 mx-auto mb-2" />
               <p className="text-sm">{sandpackError || previewError}</p>
             </div>
-          ) : useSimplePreview && isVanillaSite ? (
+          ) : isVanillaSite ? (
             // Простой iframe превью для vanilla сайтов
             <div className="h-[420px] bg-white">
               <iframe
@@ -414,19 +398,35 @@ export function WebsiteArtifactCard({ artifact, onUpdate }: WebsiteArtifactCardP
                 }}
               />
             </div>
+          ) : isVanillaSite ? (
+            // Серверное превью для vanilla сайтов (HTML/CSS/JS)
+            <div className="h-[420px] bg-white">
+              <iframe
+                key={previewKey}
+                title="server-preview"
+                src={`/api/artifacts/${artifact.id}/preview`}
+                sandbox="allow-scripts"
+                style={{ width: "100%", height: "100%", border: 0 }}
+                onLoad={() => {
+                  setIsPreviewLoading(false);
+                  setPreviewError(""); // Очищаем ошибки при успешной загрузке
+                }}
+                onError={() => {
+                  setPreviewError('Ошибка загрузки серверного превью');
+                  setIsPreviewLoading(false);
+                }}
+              />
+            </div>
           ) : (
+            // Sandpack для React/Vite проектов
             <SandpackProvider
               key={previewKey}
-              template={isVanillaSite ? "static" : "vite-react-ts"}
+              template="vite-react-ts"
               files={sandpackFiles}
-              customSetup={!isVanillaSite ? {
+              customSetup={{
                 dependencies: {
                   "esbuild-wasm": "^0.21.5",
                 },
-              } : {}}
-              options={{
-                // Для static режима сразу открываем index.html
-                activeFile: isVanillaSite ? "/index.html" : undefined,
               }}
               theme="dark"
             >
@@ -440,13 +440,6 @@ export function WebsiteArtifactCard({ artifact, onUpdate }: WebsiteArtifactCardP
                 <SandpackPreview
                   showOpenInCodeSandbox={false}
                   showOpenNewtab={false}
-                  iframeProps={{
-                    sandbox: "allow-scripts allow-same-origin allow-forms allow-modals allow-downloads",
-                    allow: "fullscreen",
-                    allowFullScreen: true,
-                    referrerPolicy: "no-referrer",
-                    loading: "lazy",
-                  }}
                   style={{ height: 420 }}
                 />
               </SandpackLayout>

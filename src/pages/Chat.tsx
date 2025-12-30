@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Send, Mic, Square, Paperclip } from "lucide-react";
@@ -104,22 +104,63 @@ const Chat = () => {
     },
     onSearchProgress: setSearchProgress,
     onTokenCost: setLastTokenCost,
+    onBalanceUpdate: () => {
+      console.log('🔄 Refreshing balance after successful request...');
+      balance.refreshBalance();
+    },
     onScrollToBottom: scroll.scrollToBottom,
   });
 
+  // Voice input state
+  const [voiceInputEnabled, setVoiceInputEnabled] = useState(true);
+
+  // Voice input callbacks - use useCallback to prevent re-initialization
+  const handleVoiceTranscript = useCallback((transcript: string) => {
+    console.log('🎤 Voice transcript received:', transcript);
+    setVoiceInputEnabled(true); // Re-enable after transcript
+    if (transcript.trim()) {
+      chatSend.sendMessage(transcript, messages);
+    }
+  }, [chatSend, messages]);
+
+  const handleVoiceError = useCallback((error: string, message?: string) => {
+    console.error('🎤 Voice input error:', { error, message });
+    setVoiceInputEnabled(true); // Re-enable on error
+    if (error === "aborted") {
+      console.log('🎤 Aborted error ignored');
+      return; // Игнорируем штатные aborted
+    }
+    if (error === "not-allowed") {
+      alert("Нужно разрешить доступ к микрофону в настройках браузера");
+    } else if (error === "no-speech") {
+      alert("Речь не обнаружена. Попробуйте еще раз.");
+    } else if (error === "start-failed") {
+      alert("Не удалось начать запись голоса. Проверьте доступ к микрофону.");
+    } else {
+      alert(`Ошибка распознавания речи: ${error}${message ? ` (${message})` : ''}`);
+    }
+  }, []);
+
   // Voice input hook (после chatSend)
   const voiceInput = useVoiceInput({
-    onTranscript: (transcript) => chatSend.sendMessage(transcript, messages),
-    onError: (error, message) => {
-      if (error === 'not-allowed') {
-        alert('Для голосового ввода необходимо разрешить доступ к микрофону');
-      } else if (error === 'no-speech') {
-        alert('Речь не обнаружена. Попробуйте еще раз.');
-      } else {
-        alert(`Ошибка распознавания речи: ${error}`);
-      }
-    }
+    onTranscript: handleVoiceTranscript,
+    onError: handleVoiceError
   });
+
+  // Track voice recording state changes
+  useEffect(() => {
+    if (!voiceInput.isRecording && !voiceInputEnabled) {
+      // Recording just ended, re-enable voice input
+      const timer = setTimeout(() => setVoiceInputEnabled(true), 500);
+      return () => clearTimeout(timer);
+    }
+  }, [voiceInput.isRecording, voiceInputEnabled]);
+
+  // Check browser support (only API availability, not permissions)
+  const isSpeechRecognitionSupported = (() => {
+    const w = window as any;
+    return !!(w.SpeechRecognition || w.webkitSpeechRecognition);
+  })();
   
 
 
@@ -612,40 +653,48 @@ const Chat = () => {
                 <Button
                   type="button"
                   onClick={input.trim() ? (e) => {
+                    console.log('🎤 Click: sending message');
                     e.preventDefault();
                     handleSubmit(e as any);
-                  } : undefined}
-                  onMouseDown={input.trim() ? undefined : (e) => {
+                  } : (e) => {
+                    console.log('🎤 Click on voice button, input empty:', !input.trim(), 'supported:', isSpeechRecognitionSupported);
                     e.preventDefault();
-                    voiceInput.toggleRecording();
-                  }}
-                  onMouseUp={input.trim() ? undefined : (e) => {
-                    e.preventDefault();
+                    if (!isSpeechRecognitionSupported) {
+                      alert('Голосовой ввод не поддерживается в этом браузере');
+                      return;
+                    }
                     if (voiceInput.isRecording) {
                       voiceInput.stopRecording();
+                    } else {
+                      setVoiceInputEnabled(false);
+                      const started = voiceInput.startRecording();
+                      if (!started) {
+                        setVoiceInputEnabled(true);
+                        return;
+                      }
+                      // Auto-stop after 5 seconds for safety
+                      setTimeout(() => {
+                        voiceInput.stopRecording();
+                        setVoiceInputEnabled(true);
+                      }, 5000);
                     }
                   }}
-                  onTouchStart={input.trim() ? undefined : (e) => {
-                    e.preventDefault();
-                    voiceInput.toggleRecording();
-                  }}
-                  onTouchEnd={input.trim() ? undefined : (e) => {
-                    e.preventDefault();
-                    if (voiceInput.isRecording) {
-                      voiceInput.stopRecording();
-                    }
-                  }}
-                  disabled={chatSend.isLoading || isProcessingFile}
+                  disabled={chatSend.isLoading || isProcessingFile || (!input.trim() && (!isSpeechRecognitionSupported || !voiceInputEnabled))}
                   className={`h-10 w-10 sm:h-[52px] sm:w-[52px] shrink-0 ${
-                    input.trim() ? "" : voiceInput.isRecording ? "bg-red-500 hover:bg-red-600 animate-pulse" : ""
+                    input.trim() ? "" : voiceInput.isRecording ? "bg-red-500 hover:bg-red-600 animate-pulse" : (!voiceInput.isSupported ? "opacity-50" : "")
                   }`}
-                  title={input.trim() ? "Отправить сообщение" :
-                         voiceInput.isRecording ? "Отпустите для завершения записи" : "Удерживайте для голосового ввода"}
+                  title={
+                    !isSpeechRecognitionSupported && !input.trim() ? "Голосовой ввод не поддерживается" :
+                    input.trim() ? "Отправить сообщение" :
+                    voiceInput.isRecording ? "Нажмите для остановки записи" : "Нажмите для голосового ввода"
+                  }
                 >
                   {input.trim() ? (
                     <Send className="h-4 w-4 sm:h-5 sm:w-5" />
                   ) : voiceInput.isRecording ? (
-                    <Square className="h-4 w-4 sm:h-5 sm:w-5" />
+                    <Square className="h-4 w-4 sm:h-5 sm:w-5 text-white" />
+                  ) : !isSpeechRecognitionSupported ? (
+                    <Mic className="h-4 w-4 sm:h-5 sm:w-5 opacity-50" />
                   ) : (
                     <Mic className="h-4 w-4 sm:h-5 sm:w-5" />
                   )}

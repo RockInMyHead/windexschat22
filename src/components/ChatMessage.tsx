@@ -1474,13 +1474,14 @@ const ChatMessage = ({ message, selectedModel }: ChatMessageProps) => {
     try {
       // Определяем язык текста (простая эвристика)
       const hasCyrillic = /[а-яё]/i.test(message.content);
-      const ttsFunction = hasCyrillic ? ttsClient.generateTTSRu : ttsClient.generateTTSEn;
 
-      const result = await ttsFunction(message.content);
-      setAudioUrl(result.file_url);
+      const result = hasCyrillic
+        ? await ttsClient.generateTTSRu(message.content)
+        : await ttsClient.generateTTSEn(message.content);
+      setAudioUrl(result.audioUrl);
 
       // Создаем аудио элемент и настраиваем обработчики
-      const audio = new Audio(result.file_url);
+      const audio = new Audio(result.audioUrl);
       audioRef.current = audio;
 
       audio.addEventListener('play', () => setIsPlayingAudio(true));

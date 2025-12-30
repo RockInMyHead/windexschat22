@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Recognition Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        button { padding: 10px 20px; margin: 10px; font-size: 16px; }
+        #status { margin: 20px 0; padding: 10px; background: #f0f0f0; }
+        #transcript { margin: 20px 0; padding: 10px; background: #e0e0e0; min-height: 50px; }
+    </style>
+</head>
+<body>
+    <h1>Voice Recognition Test</h1>
+    <div id="status">Initializing...</div>
+    <button id="startBtn">Start Recording</button>
+    <button id="stopBtn">Stop Recording</button>
+    <div id="transcript"></div>
+
+    <script>
+        const statusDiv = document.getElementById('status');
+        const transcriptDiv = document.getElementById('transcript');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+
+        // Check for browser support
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+        if (!SpeechRecognition) {
+            statusDiv.textContent = '❌ Speech Recognition API not supported in this browser';
+            statusDiv.style.backgroundColor = '#ffebee';
+            startBtn.disabled = true;
+            stopBtn.disabled = true;
+        } else {
+            statusDiv.textContent = '✅ Speech Recognition API supported';
+            statusDiv.style.backgroundColor = '#e8f5e8';
+
+            const recognition = new SpeechRecognition();
+            recognition.continuous = false;
+            recognition.interimResults = false;
+            recognition.lang = 'ru-RU';
+
+            recognition.onstart = () => {
+                statusDiv.textContent = '🎤 Recording...';
+                statusDiv.style.backgroundColor = '#fff3e0';
+            };
+
+            recognition.onend = () => {
+                statusDiv.textContent = '✅ Recording stopped';
+                statusDiv.style.backgroundColor = '#e8f5e8';
+            };
+
+            recognition.onresult = (event) => {
+                const transcript = event.results[0][0].transcript;
+                transcriptDiv.textContent = transcript;
+                console.log('Transcript:', transcript);
+            };
+
+            recognition.onerror = (event) => {
+                statusDiv.textContent = `❌ Error: ${event.error}`;
+                statusDiv.style.backgroundColor = '#ffebee';
+                console.error('Speech recognition error:', event.error);
+            };
+
+            startBtn.addEventListener('click', () => {
+                try {
+                    recognition.start();
+                } catch (error) {
+                    statusDiv.textContent = `❌ Start failed: ${error.message}`;
+                    statusDiv.style.backgroundColor = '#ffebee';
+                }
+            });
+
+            stopBtn.addEventListener('click', () => {
+                try {
+                    recognition.stop();
+                } catch (error) {
+                    console.error('Stop failed:', error);
+                }
+            });
+        }
+
+        // Additional browser info
+        console.log('Browser info:', {
+            userAgent: navigator.userAgent,
+            speechRecognition: !!SpeechRecognition,
+            webkitSpeechRecognition: !!window.webkitSpeechRecognition,
+            SpeechRecognition: !!window.SpeechRecognition
+        });
+    </script>
+</body>
+</html>

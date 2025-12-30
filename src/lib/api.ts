@@ -1,6 +1,5 @@
 // Use relative path for API - works on any domain
 export const API_BASE_URL = '/api';
-export const TTS_BASE_URL = 'http://localhost:8000';
 
 export interface Message {
   id?: number;
@@ -195,56 +194,60 @@ class ApiClient {
     });
   }
 
-  // === TTS API ===
-
 }
 
-// TTS API Client
-class TTSClient {
-  private async request(endpoint: string, options: RequestInit = {}): Promise<any> {
-    const url = `${TTS_BASE_URL}${endpoint}`;
-
-    console.log(`🔗 TTS Request: ${options.method || 'GET'} ${url}`);
-
-    const response = await fetch(url, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        ...options.headers,
-      },
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`TTS API error: ${response.status} ${errorText}`);
-    }
-
-    return response.json();
-  }
+// OpenAI TTS клиент
+class OpenAITTSClient {
+  private apiKey = import.meta.env.VITE_OPENAI_API_KEY || "";
 
   async generateTTS(text: string, options: {
     model?: string;
     voice?: string;
-    emotion?: string;
-    language?: string;
-  } = {}): Promise<{ file_url: string; duration?: number }> {
-    return this.request('/tts', {
-      method: 'POST',
-      body: JSON.stringify({
-        text,
-        ...options
-      }),
-    });
+    speed?: number;
+  } = {}): Promise<{ audioUrl: string; duration?: number }> {
+    try {
+      const response = await fetch('https://api.openai.com/v1/audio/speech', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: options.model || 'tts-1',
+          input: text,
+          voice: options.voice || 'alloy',
+          speed: options.speed || 1.0,
+          response_format: 'mp3'
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`OpenAI TTS API error: ${response.status} ${error}`);
+      }
+
+      const audioBlob = await response.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
+
+      return {
+        audioUrl,
+        duration: undefined // OpenAI не возвращает длительность
+      };
+    } catch (error) {
+      console.error('OpenAI TTS error:', error);
+      throw error;
+    }
   }
 
   async generateTTSRu(text: string, options: {
     model?: string;
     voice?: string;
-    emotion?: string;
-  } = {}): Promise<{ file_url: string; duration?: number }> {
+    speed?: number;
+  } = {}): Promise<{ audioUrl: string; duration?: number }> {
     return this.generateTTS(text, {
-      model: 'silero_ru',
-      language: 'ru',
+      model: options.model || 'tts-1',
+      voice: 'alloy', // Можно использовать разные голоса для разных языков
+      speed: options.speed || 1.0,
       ...options
     });
   }
@@ -252,15 +255,17 @@ class TTSClient {
   async generateTTSEn(text: string, options: {
     model?: string;
     voice?: string;
-    emotion?: string;
-  } = {}): Promise<{ file_url: string; duration?: number }> {
+    speed?: number;
+  } = {}): Promise<{ audioUrl: string; duration?: number }> {
     return this.generateTTS(text, {
-      model: 'silero_en',
-      language: 'en',
+      model: options.model || 'tts-1',
+      voice: 'alloy',
+      speed: options.speed || 1.0,
       ...options
     });
   }
 }
 
+export const ttsClient = new OpenAITTSClient();
+
 export const apiClient = new ApiClient();
-export const ttsClient = new TTSClient();
