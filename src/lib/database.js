@@ -596,6 +596,17 @@ export class DatabaseService {
     };
   }
 
+  // Получить последнюю ошибку SQLite
+  static getLastError() {
+    try {
+      // better-sqlite3 не хранит последнюю ошибку глобально, 
+      // но мы можем попробовать получить инфо о последнем запросе
+      return null; // В данной реализации возвращаем null, ошибки ловятся в try/catch
+    } catch {
+      return null;
+    }
+  }
+
   // Закрытие соединения с БД (для cleanup)
   static close() {
     db.close();

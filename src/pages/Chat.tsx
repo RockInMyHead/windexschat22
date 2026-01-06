@@ -54,6 +54,7 @@ const Chat = () => {
   const [responsePlan, setResponsePlan] = useState<PlanStep[]>([]);
   const [currentStep, setCurrentStep] = useState<number>(-1);
   const [isPlanning, setIsPlanning] = useState(false);
+  const [planningCompleted, setPlanningCompleted] = useState(false);
   const [searchProgress, setSearchProgress] = useState<string[]>([]);
   const [thinkingMessages, setThinkingMessages] = useState<string[]>([]);
   const [lastTokenCost, setLastTokenCost] = useState<TokenCost | null>(null);
@@ -122,6 +123,61 @@ const Chat = () => {
       chatSend.sendMessage(transcript, messages);
     }
   }, [chatSend, messages]);
+
+  // Автоматическое исчезновение плана после завершения планирования
+  useEffect(() => {
+    if (planningCompleted && responsePlan.length > 0) {
+      console.log('⏰ Plan completed, will disappear in 3 seconds...');
+      const timer = setTimeout(() => {
+        console.log('✨ Plan disappeared');
+        setResponsePlan([]);
+        setCurrentStep(-1);
+        setIsPlanning(false);
+        setPlanningCompleted(false);
+      }, 3000); // План исчезает через 3 секунды после завершения
+
+      return () => clearTimeout(timer);
+    }
+  }, [planningCompleted, responsePlan.length]);
+
+  // Эффект конвейера: постепенное увеличение currentStep для имитации выполнения шагов
+  useEffect(() => {
+    console.log('🔄 Conveyor effect triggered:', { isPlanning, planningCompleted, responsePlanLength: responsePlan.length, currentStep });
+
+    // Не запускаем конвейер, если планирование уже завершено
+    if (planningCompleted) {
+      console.log('🛑 Planning already completed, skipping conveyor');
+      return;
+    }
+
+    if (isPlanning && responsePlan.length > 0 && currentStep === -1) {
+      console.log('🚀 Starting conveyor with first step in 1 second...');
+      // Начинаем с первого шага через 1 секунду после генерации плана
+      const startTimer = setTimeout(() => {
+        console.log('✅ Setting currentStep to 0, showing conveyor');
+        setCurrentStep(0);
+      }, 1000);
+
+      return () => clearTimeout(startTimer);
+    }
+
+    if (isPlanning && responsePlan.length > 0 && currentStep >= 0 && currentStep < responsePlan.length) {
+      console.log(`⏱️ Step ${currentStep + 1}/${responsePlan.length} active, next step in 2 seconds...`);
+      // Автоматически переходим к следующему шагу каждые 2 секунды
+      const stepTimer = setTimeout(() => {
+        if (currentStep < responsePlan.length - 1) {
+          console.log(`➡️ Moving to step ${currentStep + 2}/${responsePlan.length}`);
+          setCurrentStep(prev => prev + 1);
+        } else {
+          console.log('🎯 All steps completed, planning completed');
+          // Все шаги выполнены, отмечаем завершение планирования
+          setPlanningCompleted(true);
+        }
+      }, 2000);
+
+      return () => clearTimeout(stepTimer);
+    }
+  }, [isPlanning, planningCompleted, responsePlan.length, currentStep]);
 
   const handleVoiceError = useCallback((error: string, message?: string) => {
     console.error('🎤 Voice input error:', { error, message });
@@ -385,6 +441,7 @@ const Chat = () => {
       setResponsePlan([]);
       setCurrentStep(-1);
       setIsPlanning(false);
+      setPlanningCompleted(false);
       setSearchProgress([]);
       setThinkingMessages([]);
       setLastTokenCost(null);
@@ -413,6 +470,7 @@ const Chat = () => {
       setResponsePlan([]);
       setCurrentStep(-1);
       setIsPlanning(false);
+      setPlanningCompleted(false);
       setThinkingMessages([]);
       setLastTokenCost(null);
       setMarketWidget(null); // Сбрасываем market widget
@@ -529,20 +587,23 @@ const Chat = () => {
               ))}
 
               {/* Thinking messages */}
-              {thinkingMessages.map((thinking, index) => (
-                <div key={`thinking-${index}`} className="mb-4">
-                  <div className="flex items-start gap-3">
-                    <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0 mt-1">
-                      <div className="w-3 h-3 bg-primary rounded-full animate-pulse"></div>
-                    </div>
-                    <div className="flex-1">
-                      <div className="text-sm text-muted-foreground whitespace-pre-line">
-                        {thinking}
+              {thinkingMessages.filter(msg => !msg.startsWith('📋 Генерирую план ответа')).map((thinking, index) => {
+                // Фильтруем индикатор строки плана (он станет видим только если что-то реально долго "думает" без финального плана)
+                return (
+                  <div key={`thinking-${index}`} className="mb-4">
+                    <div className="flex items-start gap-3">
+                      <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0 mt-1">
+                        <div className="w-3 h-3 bg-primary rounded-full animate-pulse"></div>
+                      </div>
+                      <div className="flex-1">
+                        <div className="text-sm text-muted-foreground whitespace-pre-line">
+                          {thinking}
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
 
               {/* Website execution progress */}
               <WebsiteExecutionProgress
@@ -550,27 +611,38 @@ const Chat = () => {
                 isVisible={chatSend.isExecutingWebsite}
               />
 
-              {/* Response plan */}
-              {isPlanning && responsePlan.length > 0 && (
+              {/* Response plan - конвейер из 4 шагов */}
+              {responsePlan.length > 0 && currentStep >= 0 && (isPlanning || planningCompleted) && (
                 <div className="mb-4 p-4 bg-secondary/50 rounded-lg border">
                   <h4 className="text-sm font-medium mb-2 flex items-center gap-2">
                     📋 План выполнения ({responsePlan.length} шагов)
                   </h4>
-                  <div className="space-y-1">
-                    {responsePlan.map((step, index) => (
-                      <div
-                        key={index}
-                        className={`text-sm flex items-center gap-2 ${
-                          index === currentStep ? 'text-primary font-medium' : 'text-muted-foreground'
-                        }`}
-                      >
-                        <div className={`w-2 h-2 rounded-full ${
-                          index < currentStep ? 'bg-green-500' :
-                          index === currentStep ? 'bg-primary animate-pulse' : 'bg-muted-foreground'
-                        }`} />
-                        {step.step}
-                      </div>
-                    ))}
+                  <div className="space-y-2">
+                    {responsePlan.slice(Math.max(0, currentStep), Math.max(0, currentStep) + 4).map((step, displayIndex) => {
+                      // Корректируем индекс относительно полного массива
+                      const actualIndex = Math.max(0, currentStep) + displayIndex;
+                      const isActive = actualIndex === currentStep;
+                      const isCompleted = actualIndex < currentStep;
+
+                      // Конвертируем шаг в текстовый формат: "step : description. searchQueries[0].query"
+                      const firstSearchQuery = step.searchQueries?.[0]?.query || '';
+                      const planText = `${step.step} : ${step.description}. ${firstSearchQuery}`;
+
+                      return (
+                        <div
+                          key={actualIndex}
+                          className={`text-sm flex items-start gap-2 ${
+                            isActive ? 'text-primary font-medium' : 'text-muted-foreground'
+                          }`}
+                        >
+                          <div className={`w-2 h-2 rounded-full mt-1 flex-shrink-0 ${
+                            isCompleted ? 'bg-green-500' :
+                            isActive ? 'bg-primary animate-pulse' : 'bg-muted-foreground'
+                          }`} />
+                          <span className="flex-1 whitespace-pre-line">{planText}</span>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}

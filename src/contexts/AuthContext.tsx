@@ -52,11 +52,25 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
         setShowAuthModal(false);
         console.log('✅ AuthContext: User restored from session:', me);
       } catch {
-        // TEMP: Skip authentication for testing voice input
-        setUser({ id: 1, email: 'test@example.com', balance: 1000 });
+        // TEMP: Create demo user and session for testing instead of skipping auth
+        try {
+          console.log('🔧 AuthContext: Creating demo user with session...');
+          const response = await apiClient.post('/auth/demo', {
+            email: 'demo@example.com',
+            username: 'Demo User'
+          });
+          setUser(response.user);
+          setIsAuthenticated(true);
+          setShowAuthModal(false);
+          console.log('✅ AuthContext: Demo user with session created:', response.user);
+        } catch (demoError) {
+          console.error('❌ AuthContext: Demo auth failed:', demoError);
+          // Fallback to old behavior
+          setUser({ id: 1, email: 'demo@example.com', name: 'Demo User' });
         setIsAuthenticated(true);
         setShowAuthModal(false);
-        console.log('🔧 AuthContext: Skipping authentication for testing');
+          console.log('🔧 AuthContext: Fallback to local demo user');
+        }
       } finally {
         setIsLoading(false);
       }

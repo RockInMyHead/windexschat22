@@ -3,6 +3,7 @@ import { InlineMath, BlockMath } from 'react-katex';
 import { Copy, Volume2, Loader2 } from "lucide-react";
 import DataVisualization, { parseVisualizationConfig, VisualizationConfig } from "./DataVisualization";
 import { ttsClient } from "@/lib/api";
+import { renderPlanJsonForDisplay } from "@/lib/renderInternalPlan";
 
 // Функция выполнения JavaScript кода в изолированном контексте
 const executeJavaScript = async (code: string): Promise<string> => {
@@ -1276,6 +1277,14 @@ const ChatMessage = ({ message, selectedModel }: ChatMessageProps) => {
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
+  // Функция для преобразования контента для отображения (заменяет JSON на читаемый текст)
+  const renderForUser = useMemo(() => {
+    return (txt: string) => {
+      if (isUser) return txt; // пользовательские сообщения не трогаем
+      return renderPlanJsonForDisplay(txt).displayText;
+    };
+  }, [isUser]);
+
   // Cleanup audio on unmount
   React.useEffect(() => {
     return () => {
@@ -1587,7 +1596,7 @@ const ChatMessage = ({ message, selectedModel }: ChatMessageProps) => {
               {messageParts[0] && (
                 <div className="mb-4">
                   <TextWithCodeBlocks
-                    text={messageParts[0]}
+                    text={renderForUser(messageParts[0])}
                     selectedModel={selectedModel}
                     onWordClick={!isUser ? handleWordClick : undefined}
                     context={message.content}
@@ -1604,7 +1613,7 @@ const ChatMessage = ({ message, selectedModel }: ChatMessageProps) => {
               {messageParts[1] && (
                 <div className="mt-4">
                   <TextWithCodeBlocks
-                    text={messageParts[1]}
+                    text={renderForUser(messageParts[1])}
                     selectedModel={selectedModel}
                     onWordClick={!isUser ? handleWordClick : undefined}
                     context={message.content}
@@ -1615,7 +1624,7 @@ const ChatMessage = ({ message, selectedModel }: ChatMessageProps) => {
           ) : (
             /* Если нет визуализации, показываем весь текст */
             <TextWithCodeBlocks
-              text={message.content}
+              text={renderForUser(message.content)}
               selectedModel={selectedModel}
               onWordClick={!isUser ? handleWordClick : undefined}
               context={message.content}

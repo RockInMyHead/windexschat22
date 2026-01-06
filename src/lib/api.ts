@@ -1,5 +1,20 @@
-// API base URL - use environment variable for production
-export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://ai.windexs.ru/api';
+// API base URL - always use current origin for browser environment
+const getApiBaseUrl = () => {
+  // Для браузерной среды всегда используем текущий origin
+  if (typeof window !== 'undefined') {
+    return `${window.location.origin}/api`;
+  }
+
+  // Для продакшена используем переменную окружения
+  if (import.meta.env.VITE_API_BASE_URL) {
+    return import.meta.env.VITE_API_BASE_URL;
+  }
+
+  // Fallback для server-side rendering
+  return 'https://ai.windexs.ru/api';
+};
+
+export const API_BASE_URL = getApiBaseUrl();
 
 // Proxy configuration
 const PROXY_URL = import.meta.env.VITE_PROXY_URL || 'socks5://7BwWCS:BBBvb6@185.68.186.158:8000';

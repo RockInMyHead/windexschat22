@@ -683,11 +683,12 @@ const handleAdvancedModelLogic = async (
   abortSignal?: AbortSignal,
   onChunk?: (chunk: string) => void,
   onPlanGenerated?: (plan: PlanStep[]) => void,
-  onStepStart?: (stepIndex: number, step: PlanStep) => void,
+  onStepStart?: (stepIndex: number, step: PlanStep, plan: PlanStep[]) => void,
   onSearchProgress?: (queries: string[]) => void,
   internetEnabled?: boolean,
   sessionId?: number,
-  requestId?: string
+  requestId?: string,
+  onThinking?: (text: string) => void
 ): Promise<string> => {
   const actualModel = MODEL;
   // ✅ FIX: modelParams объявляем ДО любых ветвлений
@@ -726,7 +727,14 @@ const handleAdvancedModelLogic = async (
   console.log(`📋 Step 1: Plan Generation | Query: "${userMessage.content}" (${userMessage.content.length} chars) | Model: ${MODEL}`);
   let plan: PlanStep[] = [];
   try {
-    plan = await generateResponsePlan(userMessage.content, internetEnabled, abortSignal);
+    // Показываем индикатор начала генерации плана в thinking area, а не в основном чате
+    if (onThinking) {
+      onThinking("📋 Генерирую план ответа...");
+    }
+    
+    // Используем форматтер для отображения процесса планирования
+    const planFormatter = createPlanStreamFormatter(onThinking);
+    plan = await generateResponsePlan(userMessage.content, internetEnabled, abortSignal, planFormatter);
     const totalQueries = plan.reduce((sum, step) => sum + (step.searchQueries?.length || 0), 0);
     console.log(`✅ Plan Generated | Steps: ${plan.length} | Total search queries: ${totalQueries}`);
 
@@ -836,12 +844,8 @@ const handleAdvancedModelLogic = async (
 
       console.log(`✅ Search Completed | Results length: ${searchResults.length} chars | Context length: ${searchContext.length} chars`);
 
-      // Уведомляем UI о начале каждого шага
-      plan.forEach((step, stepIndex) => {
-        if (onStepStart) {
-          setTimeout(() => onStepStart(stepIndex, step), stepIndex * 500);
-        }
-      });
+      // UI сам управляет отображением шагов в режиме конвейера
+      // Не нужно уведомлять о каждом шаге отдельно
 
     } catch (searchError) {
       console.error('❌ Error during internet search:', searchError);
@@ -2040,6 +2044,277 @@ function sanitizeExternalLinks(code: string): string {
     .replace(/@import\s+url\(["']https?:\/\/[^"']*["']\);?/gi, '');
 }
 
+// Стабильный JavaScript runtime для всех сайтов
+const BASE_APP_JS = String.raw`(function () {
+  'use strict';
+
+  const $ = (sel, root) => (root || document).querySelector(sel);
+  const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
+
+  function setTheme(theme) {
+    if (theme === 'dark') {
+      document.documentElement.setAttribute('data-theme', 'dark');
+    } else {
+      document.documentElement.removeAttribute('data-theme');
+    }
+    try { localStorage.setItem('theme', theme); } catch {}
+  }
+
+  function initThemeToggle() {
+    const btn = document.getElementById('theme-toggle');
+    if (!btn) return;
+
+    let theme = 'light';
+    try {
+      theme = localStorage.getItem('theme') || theme;
+    } catch {}
+    if (!theme || theme === 'auto') {
+      theme = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    setTheme(theme);
+
+    btn.addEventListener('click', () => {
+      const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+      setTheme(isDark ? 'light' : 'dark');
+    });
+  }
+
+  function initMobileMenu() {
+    const navToggle = document.getElementById('nav-toggle');
+    const navMenu = document.querySelector('.nav-menu');
+    if (!navToggle || !navMenu) return;
+
+    const navLinks = $$('.nav-link', navMenu);
+
+    function closeMenu() {
+      navMenu.classList.remove('nav-open');
+      navToggle.setAttribute('aria-expanded', 'false');
+    }
+
+    navToggle.addEventListener('click', () => {
+      const isOpen = navMenu.classList.toggle('nav-open');
+      navToggle.setAttribute('aria-expanded', String(isOpen));
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && navMenu.classList.contains('nav-open')) closeMenu();
+    });
+
+    navLinks.forEach((a) => a.addEventListener('click', closeMenu));
+  }
+
+  function initSmoothScroll() {
+    $$('a[href^="#"]').forEach((a) => {
+      a.addEventListener('click', (e) => {
+        const href = a.getAttribute('href');
+        if (!href || href === '#' || href === '#!') return;
+        const target = document.querySelector(href);
+        if (!target) return;
+        e.preventDefault();
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    });
+  }
+
+  function initTabs() {
+    const container = document.getElementById('showcase');
+    if (!container) return;
+
+    const tabs = $$('.tab', container);
+    const panels = $$('.tab-panel', container);
+    if (!tabs.length || !panels.length) return;
+
+    tabs.forEach((tab) => {
+      tab.setAttribute('role', 'tab');
+      tab.addEventListener('click', () => {
+        const target = tab.getAttribute('data-target');
+        if (!target) return;
+
+        tabs.forEach((t) => {
+          t.classList.remove('active');
+          t.setAttribute('aria-selected', 'false');
+        });
+        tab.classList.add('active');
+        tab.setAttribute('aria-selected', 'true');
+
+        panels.forEach((p) => {
+          p.classList.toggle('active', p.id === target);
+        });
+      });
+    });
+  }
+
+  function initAccordion() {
+    const triggers = $$('.accordion-header');
+    if (!triggers.length) return;
+
+    triggers.forEach((btn) => {
+      btn.setAttribute('type', 'button');
+      if (!btn.hasAttribute('aria-expanded')) btn.setAttribute('aria-expanded', 'false');
+
+      const panel = btn.nextElementSibling;
+      if (!panel) return;
+
+      panel.style.maxHeight = '0';
+
+      btn.addEventListener('click', () => {
+        const isExpanded = btn.getAttribute('aria-expanded') === 'true';
+        triggers.forEach((other) => {
+          if (other !== btn) {
+            other.setAttribute('aria-expanded', 'false');
+            const p = other.nextElementSibling;
+            if (p) p.style.maxHeight = '0';
+          }
+        });
+
+        btn.setAttribute('aria-expanded', String(!isExpanded));
+        panel.style.maxHeight = isExpanded ? '0' : (panel.scrollHeight + 'px');
+      });
+    });
+  }
+
+  function showToast(message, type) {
+    const toast = document.getElementById('toast');
+    if (!toast) return;
+
+    const safe = String(message || '');
+    const icon = type === 'success' ? '✓' : type === 'error' ? '!' : '•';
+
+    toast.className = '';
+    toast.innerHTML = '<span class="toast-icon" aria-hidden="true">' + icon + '</span>' +
+                      '<span class="toast-message"></span>';
+    const msgEl = toast.querySelector('.toast-message');
+    if (msgEl) msgEl.textContent = safe;
+
+    if (type) toast.classList.add('toast-' + type);
+    toast.classList.add('show');
+
+    window.clearTimeout(showToast._t);
+    showToast._t = window.setTimeout(() => {
+      toast.classList.remove('show');
+    }, 3000);
+  }
+
+  function initForm() {
+    const form = document.getElementById('contact-form');
+    const status = document.getElementById('form-status');
+    if (!form) return;
+
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+
+      let ok = true;
+      const name = form.querySelector('[name="name"]');
+      const email = form.querySelector('[name="email"]');
+      const consent = form.querySelector('[name="consent"]');
+
+      if (name && name.hasAttribute('required') && !name.value.trim()) { name.setAttribute('aria-invalid', 'true'); ok = false; }
+      if (email && email.hasAttribute('required')) {
+        const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!email.value.trim() || !re.test(email.value)) { email.setAttribute('aria-invalid', 'true'); ok = false; }
+      }
+      if (consent && consent.hasAttribute('required') && !consent.checked) { consent.setAttribute('aria-invalid', 'true'); ok = false; }
+
+      if (!ok) { showToast('Пожалуйста, заполните обязательные поля корректно', 'error'); return; }
+
+      if (status) { status.textContent = 'Отправка...'; status.style.color = '#666'; }
+      setTimeout(() => {
+        if (status) { status.textContent = 'Сообщение отправлено!'; status.style.color = '#2e7d32'; }
+        showToast('Сообщение успешно отправлено!', 'success');
+        form.reset();
+      }, 900);
+    });
+  }
+
+  function initScrollToTop() {
+    const btn = document.getElementById('to-top');
+    if (!btn) return;
+
+    function sync() {
+      const visible = window.pageYOffset > 300;
+      btn.classList.toggle('visible', visible);
+    }
+
+    window.addEventListener('scroll', sync, { passive: true });
+    sync();
+
+    btn.addEventListener('click', () => {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    initThemeToggle();
+    initMobileMenu();
+    initSmoothScroll();
+    initTabs();
+    initAccordion();
+    initForm();
+    initScrollToTop();
+  });
+})();`;
+
+// Нормализация HTML контракта для согласованности с CSS/JS
+function normalizeStaticWebsite(html: string): string {
+  let out = html;
+
+  // 1) Навигация: nav-links -> nav-menu
+  out = out.replace(/\bclass="nav-links"\b/g, 'class="nav-menu"');
+  out = out.replace(/\bclass="([^"]*)\bnav-links\b([^"]*)"/g, (m, before, after) => {
+    const classes = (before + ' nav-menu ' + after).trim().replace(/\s+/g, ' ');
+    return `class="${classes}"`;
+  });
+
+  // 2) Проставить nav-link на ссылки в меню (если его нет)
+  out = out.replace(/(<nav[\s\S]*?<\/nav>)/i, (navBlock) => {
+    return navBlock.replace(/<a\b(?![^>]*\bclass=)/g, '<a class="nav-link"')
+      .replace(/<a\b([^>]*?)\bclass="([^"]*)"/g, (m, attrs, cls) => {
+        if (/\bnav-link\b/.test(cls)) return m;
+        return `<a${attrs} class="${cls} nav-link"`;
+      });
+  });
+
+  // 3) Кнопка бургера должна иметь класс nav-toggle (CSS на него завязан)
+  out = out.replace(
+    /<button\b([^>]*?)\bid="nav-toggle"\b([^>]*)>/g,
+    (m, a, b) => {
+      const hasClass = /\bclass=/.test(m);
+      if (!hasClass) return `<button${a} id="nav-toggle"${b} class="nav-toggle">`;
+      return m.replace(/\bclass="([^"]*)"/, (mm, cls) =>
+        /\bnav-toggle\b/.test(cls) ? mm : `class="${cls} nav-toggle"`
+      );
+    }
+  );
+
+  // 4) Табы: tab-buttons -> tab-list, data-tab -> data-target
+  out = out.replace(/\btab-buttons\b/g, 'tab-list');
+  out = out.replace(/\bdata-tab=/g, 'data-target=');
+
+  // 5) Аккордеон: trigger/panel -> header/content (под ваш CSS)
+  out = out.replace(/\baccordion-trigger\b/g, 'accordion-header');
+  out = out.replace(/\baccordion-panel\b/g, 'accordion-content');
+
+  // 6) Кнопки: "btn primary" -> "btn btn-primary", "btn ghost" -> "btn btn-secondary"
+  out = out.replace(/\bclass="([^"]*\bbtn\b[^"]*)\bprimary\b([^"]*)"/g, (m, before, after) => {
+    const classes = (before + ' btn-primary ' + after).trim().replace(/\s+/g, ' ');
+    return `class="${classes}"`;
+  });
+  out = out.replace(/\bclass="([^"]*\bbtn\b[^"]*)\bghost\b([^"]*)"/g, (m, before, after) => {
+    const classes = (before + ' btn-secondary ' + after).trim().replace(/\s+/g, ' ');
+    return `class="${classes}"`;
+  });
+
+  // 7) Hero классы для правильной стилизации
+  out = out.replace(/<section id="hero">/g, '<section id="hero" class="hero-content">');
+  out = out.replace(/(<section id="hero"[^>]*>[\s\S]*?)<h1>/g, '$1<h1 class="hero-title">');
+  out = out.replace(/(<section id="hero"[^>]*>[\s\S]*?<h1[^>]*>[\s\S]*?<\/h1>\s*)<p>/g, '$1<p class="hero-subtitle">');
+
+  // 8) Header container для навигации
+  out = out.replace(/<nav id="primary-nav">/g, '<nav id="primary-nav" class="header-container">');
+
+  return out;
+}
+
 // Вспомогательная функция для обработки артефакта
 function processArtifact(parsed: any): { artifact: WebsiteArtifact; assistantText: string } {
   if (!parsed?.artifact?.files || typeof parsed.artifact.files !== "object") {
@@ -2118,7 +2393,56 @@ function processArtifact(parsed: any): { artifact: WebsiteArtifact; assistantTex
   }
 
   if (!correctedFiles["/app.js"]) {
-    correctedFiles["/app.js"] = `document.addEventListener("DOMContentLoaded",()=>{document.getElementById("app").innerHTML="<h1>Сайт создан</h1><p>Добавьте контент по запросу пользователя.</p>";});`;
+    correctedFiles["/app.js"] = BASE_APP_JS;
+  }
+
+  // НОРМАЛИЗАЦИЯ КОНТРАКТОВ: приводим HTML к единой схеме классов/атрибутов
+  if (correctedFiles["/index.html"]) {
+    correctedFiles["/index.html"] = normalizeStaticWebsite(correctedFiles["/index.html"]);
+  }
+
+  // ФИКСИРУЕМ JS: используем стабильный runtime (вместо LLM app.js)
+  // Это гарантирует работоспособность всех интерактивных элементов
+  correctedFiles["/app.js"] = BASE_APP_JS;
+
+  // Smoke test: проверка нормализации (только в dev режиме)
+  if (typeof process !== 'undefined' && process.env && process.env.NODE_ENV !== 'production') {
+    const html = correctedFiles["/index.html"] || '';
+    const css = correctedFiles["/styles.css"] || '';
+    const js = correctedFiles["/app.js"] || '';
+
+    const checks = {
+      html: {
+        navMenu: html.includes('class="nav-menu') || html.includes('class="nav-menu"'),
+        navLink: html.includes('nav-link'),
+        dataTarget: html.includes('data-target='),
+        accordionHeader: html.includes('accordion-header'),
+        accordionContent: html.includes('accordion-content'),
+        btnPrimary: html.includes('btn-primary')
+      },
+      css: {
+        tabList: css.includes('.tab-list'),
+        toastShow: css.includes('#toast.show') || css.includes('#toast.show'),
+        toTopVisible: css.includes('#to-top.visible') || css.includes('#to-top.visible')
+      },
+      js: {
+        initThemeToggle: js.includes('initThemeToggle'),
+        toastShow: js.includes("toast.classList.add('show')"),
+        toTopVisible: js.includes("btn.classList.toggle('visible'")
+      }
+    };
+
+    const failed = Object.entries(checks).flatMap(([file, fileChecks]) =>
+      Object.entries(fileChecks)
+        .filter(([_, passed]) => !passed)
+        .map(([check]) => `${file}.${check}`)
+    );
+
+    if (failed.length > 0) {
+      console.warn(`⚠️ Normalization smoke test failed:`, failed);
+    } else {
+      console.log('✅ Normalization smoke test passed');
+    }
   }
 
   parsed.artifact.files = correctedFiles;
@@ -2135,13 +2459,14 @@ export const sendChatMessage = async (
   messages: Message[],
   onChunk?: (chunk: string) => void,
   onPlanGenerated?: (plan: PlanStep[]) => void,
-  onStepStart?: (stepIndex: number, step: PlanStep) => void,
+  onStepStart?: (stepIndex: number, step: PlanStep, plan: PlanStep[]) => void,
   onSearchProgress?: (queries: string[]) => void,
   internetEnabled?: boolean,
   onTokenCost?: (tokenCost: TokenCost) => void,
   abortSignal?: AbortSignal,
   sessionId?: number,
-  requestId?: string
+  requestId?: string,
+  onThinking?: (text: string) => void
 ): Promise<string> => {
   console.log(`🔍 sendChatMessage called with requestId:`, requestId, `typeof:`, typeof requestId);
 
@@ -2165,7 +2490,7 @@ export const sendChatMessage = async (
   // СПЕЦИАЛЬНАЯ ЛОГИКА ДЛЯ ПРОДВИНУТЫХ МОДЕЛЕЙ (только при включенном интернете)
   if (internetEnabled) {
     console.log(`🎯 Advanced Logic | Model: ${actualModel} | Internet: ${internetEnabled} | User query: "${userMessage?.content?.substring(0, 100) || 'none'}..."`);
-    return handleAdvancedModelLogic(messages, userMessage, abortSignal, onChunk, onPlanGenerated, onStepStart, onSearchProgress, internetEnabled, sessionId, requestId);
+    return handleAdvancedModelLogic(messages, userMessage, abortSignal, onChunk, onPlanGenerated, onStepStart, onSearchProgress, internetEnabled, sessionId, requestId, onThinking);
   }
   // Получаем параметры для модели
   const modelParams = MODEL_PARAMS;
@@ -2287,7 +2612,14 @@ export const sendChatMessage = async (
       if (shouldGeneratePlan) {
         try {
           console.log(`📋 Generating response plan | Query: "${userMessage.content.substring(0, 100)}..." | Model: ${MODEL}`);
-          plan = await generateResponsePlan(userMessage.content, internetEnabled, abortSignal);
+          // Показываем индикатор начала генерации плана в thinking area
+          if (onThinking) {
+            onThinking("📋 Генерирую план ответа...");
+          }
+          
+          // Используем форматтер для отображения процесса планирования
+          const planFormatter = createPlanStreamFormatter(onThinking);
+          plan = await generateResponsePlan(userMessage.content, internetEnabled, abortSignal, planFormatter);
           console.log(`✅ Plan generated successfully | Steps: ${plan.length}`);
         } catch (planError: any) {
           // Проверяем тип ошибки
@@ -2908,7 +3240,8 @@ ${planDescription}
 const generateResponsePlan = async (
   userQuestion: string,
   useWebSearch?: boolean,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  onChunk?: (chunk: string) => void
 ): Promise<PlanStep[]> => {
   console.log(`📋 Plan Generation | Question: "${userQuestion}" (${userQuestion.length} chars) | Model: ${MODEL}`);
 
@@ -3007,7 +3340,8 @@ const generateResponsePlan = async (
 ]
 `;
 
-  console.log(`🚀 Plan Generation Request | Model: ${MODEL} | Prompt length: ${planPrompt.length} chars | Stream: false`);
+  const useStreaming = !!onChunk; // Используем стриминг только если есть callback
+  console.log(`🚀 Plan Generation Request | Model: ${MODEL} | Prompt length: ${planPrompt.length} chars | Stream: ${useStreaming}`);
 
   // Создаем AbortController для комбинации внешнего сигнала и таймаута
   const controller = new AbortController();
@@ -3040,7 +3374,7 @@ const generateResponsePlan = async (
           { role: 'user', content: planPrompt }
         ],
         model: MODEL,
-        stream: false,
+        stream: useStreaming,
         ...PLAN_PARAMS,
       }),
     });
@@ -3053,12 +3387,58 @@ const generateResponsePlan = async (
       throw new Error(`Plan generation API error: ${response.status} ${response.statusText} - ${errorText}`);
     }
 
+    let planText = '[]';
+
+    if (useStreaming && response.body) {
+      // Обработка стриминга
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let fullResponse = '';
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6);
+              if (data === '[DONE]') continue;
+
+              try {
+                const parsed = JSON.parse(data);
+                const content = parsed.choices?.[0]?.delta?.content;
+                if (content) {
+                  fullResponse += content;
+                  // Показываем прогресс генерации плана
+                  if (onChunk) {
+                    onChunk(content);
+                  }
+                }
+              } catch (e: any) {
+                console.error(`❌ Plan Generation SSE Parse Error | Data length: ${data.length} | Error: ${e.message || e}`);
+              }
+            }
+          }
+        }
+
+        planText = fullResponse;
+        console.log(`📦 Plan Generation Streaming Complete | Total length: ${planText.length} chars`);
+      } finally {
+        reader.releaseLock();
+      }
+    } else {
+      // Обычная обработка без стриминга
     const responseData = await response.json();
     const responseSize = JSON.stringify(responseData).length;
     console.log(`📦 Plan Generation Response | Status: ${response.status} | Response size: ${responseSize} bytes | Has choices: ${!!responseData.choices}`);
-
-    // Обработка ответа от DeepSeek API
-    let planText = responseData.choices[0]?.message?.content || '[]';
+      planText = responseData.choices[0]?.message?.content || '[]';
+    }
 
     try {
     // Очищаем текст от возможных обратных кавычек и лишних символов
@@ -3476,4 +3856,36 @@ ${searchContext}
 
     return stepResponse;
   }
+};
+
+/**
+ * Создает функцию-обертку для обработки потока JSON-плана.
+ * Извлекает текстовые поля и передает их в колбэк для отображения.
+ */
+export const createPlanStreamFormatter = (onThinking?: (text: string) => void) => {
+  let fullText = "";
+  let lastDisplayText = "";
+
+  return (chunk: string) => {
+    fullText += chunk;
+    
+    // Простой поиск полей "step" и "description" в сыром JSON потоке
+    // Это позволяет показывать прогресс даже до завершения парсинга всего JSON
+    const steps = [...fullText.matchAll(/"step":\s*"([^"]*)"/g)].map(m => m[1]);
+    const descriptions = [...fullText.matchAll(/"description":\s*"([^"]*)"/g)].map(m => m[1]);
+    
+    let displayText = "📋 Планирование ответа...\n\n";
+    for (let i = 0; i < steps.length; i++) {
+      displayText += `• ${steps[i]}\n`;
+      if (descriptions[i]) {
+        displayText += `  ${descriptions[i]}\n`;
+      }
+    }
+    
+    // Вызываем колбэк только если текст изменился
+    if (displayText !== lastDisplayText && onThinking) {
+      onThinking(displayText);
+      lastDisplayText = displayText;
+    }
+  };
 };

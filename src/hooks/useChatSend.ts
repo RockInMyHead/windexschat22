@@ -29,6 +29,8 @@ type ExecutionEvent =
   | { type: "step_start"; id: string; label: string }
   | { type: "step_done"; id: string }
   | { type: "step_error"; id: string; error: string }
+  | { type: "fatal"; error: string }
+  | { type: "ping"; ts?: number }
   | { type: "done"; artifactId: number };
 
 // Execution step type for UI
@@ -45,93 +47,190 @@ async function executeWebsiteStream(
   sessionId: number,
   onEvent: (event: ExecutionEvent) => void
 ): Promise<{ artifactId: number }> {
-  return new Promise(async (resolve, reject) => {
-    let settled = false; // ✅ добавили
+  // Тайминги - увеличены для стабильности
+  const IDLE_TIMEOUT_MS = 300_000;       // 5 минут без данных
+  const HARD_TIMEOUT_MS = 45 * 60_000;   // 45 минут абсолютный потолок
 
-    const safeResolve = (v: { artifactId: number }) => {
+  const controller = new AbortController();
+  const decoder = new TextDecoder();
+
+  let settled = false;
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  let hardTimer: ReturnType<typeof setTimeout> | null = null;
+
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+
+  const clearTimers = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    if (hardTimer) clearTimeout(hardTimer);
+    idleTimer = null;
+    hardTimer = null;
+  };
+
+  const cleanup = async () => {
+    clearTimers();
+    try { controller.abort(); } catch {}
+    try { await reader?.cancel(); } catch {}
+  };
+
+  const armIdle = (rejectFn: (e: Error) => void) => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
       if (settled) return;
       settled = true;
+      controller.abort();
+      rejectFn(new Error(`Website generation idle timeout (${Math.round(IDLE_TIMEOUT_MS / 1000)}s)`));
+    }, IDLE_TIMEOUT_MS);
+  };
+
+  return new Promise(async (resolve, reject) => {
+    const safeResolve = async (v: { artifactId: number }) => {
+      if (settled) return;
+      settled = true;
+      await cleanup();
       resolve(v);
     };
 
-    const safeReject = (e: unknown) => {
+    const safeReject = async (e: unknown) => {
       if (settled) return;
       settled = true;
+      await cleanup();
       reject(e);
     };
 
-    // ⏰ таймер теперь тоже safe
-    const timeout = setTimeout(() => {
-      safeReject(new Error('Website generation timeout (10 minutes)'));
-    }, 10 * 60 * 1000);
+    // HARD timeout (абсолютный)
+    hardTimer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      controller.abort();
+      reject(new Error(`Website generation timeout (${Math.round(HARD_TIMEOUT_MS / 60000)} minutes)`));
+    }, HARD_TIMEOUT_MS);
 
     try {
-      const response = await fetch('/api/website/execute', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          prompt,
-          sessionId
-        })
+      // стартуем idle timeout
+      armIdle((e) => reject(e));
+
+      const response = await fetch("/api/website/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt, sessionId }),
+        signal: controller.signal, // ✅ критично
       });
 
       if (!response.ok) {
-        clearTimeout(timeout);
-        safeReject(new Error(`HTTP error! status: ${response.status}`));
+        await safeReject(new Error(`HTTP error! status: ${response.status}`));
         return;
       }
 
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-
+      reader = response.body?.getReader() || null;
       if (!reader) {
-        clearTimeout(timeout);
-        safeReject(new Error('No response body reader'));
+        await safeReject(new Error("No response body reader"));
         return;
       }
 
-      let buffer = '';
+      let buffer = "";
 
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        
+        if (done) {
+          console.log('📡 Stream done signal received');
+          break;
+        }
+
+        // пришли данные — сбрасываем idle timeout
+        armIdle((e) => reject(e));
 
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+        console.log(`📦 Received chunk, buffer size: ${buffer.length}`);
+
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        console.log(`📋 Processing ${lines.length} lines from buffer`);
 
         for (const line of lines) {
+          if (settled) {
+            console.log('⚠️ Already settled, ignoring line');
+            return;
+          }
+
           const trimmedLine = line.trim();
           if (!trimmedLine) continue;
 
+          let event: ExecutionEvent | null = null;
           try {
-            const event: ExecutionEvent = JSON.parse(trimmedLine);
-            onEvent(event);
-
-            if (event.type === 'done') {
-              clearTimeout(timeout);
-              safeResolve({ artifactId: (event as any).artifactId });
-              return;
-            }
-
-            if (event.type === 'step_error' || event.type === 'fatal') {
-              clearTimeout(timeout);
-              safeReject(new Error((event as any).error || 'Website generation failed'));
-              return;
-            }
+            event = JSON.parse(trimmedLine);
+            console.log(`✅ Parsed event:`, event.type, event);
           } catch (e) {
-            console.warn('Failed to parse execution event:', trimmedLine, e);
+            console.warn("Failed to parse execution event:", trimmedLine, e);
+            continue;
+          }
+
+          // событие пришло — сбрасываем idle timeout
+          armIdle((e) => reject(e));
+
+          // Специально логируем ping события
+          if (event.type === "ping") {
+            console.log(`🏓 Ping received at ${new Date().toISOString()}`);
+            continue; // Не передаем ping в onEvent
+          }
+
+          // ✅ не дергаем onEvent после settle
+          if (!settled) {
+            console.log(`📤 Calling onEvent for:`, event.type);
+            try {
+              onEvent(event);
+            } catch (onEventError) {
+              console.error(`❌ Error in onEvent handler:`, onEventError);
+              // Не прерываем стрим из-за ошибки в обработчике
+            }
+          }
+
+          if (event.type === "done") {
+            console.log(`✅ Done event received, artifactId: ${event.artifactId}`);
+            await safeResolve({ artifactId: event.artifactId });
+            return;
+          }
+
+          if (event.type === "step_error" || event.type === "fatal") {
+            console.error(`❌ Error event received:`, (event as any).error);
+            await safeReject(new Error((event as any).error || "Website generation failed"));
+            return;
           }
         }
       }
 
-      clearTimeout(timeout);
-      safeReject(new Error('Stream ended without completion'));
+      console.log('🔚 While loop ended, checking buffer...');
+
+      // Пытаемся разобрать хвост буфера (если сервер не закончил \n)
+      const tail = buffer.trim();
+      if (!settled && tail) {
+        console.log(`🔍 Checking tail buffer: ${tail.substring(0, 100)}`);
+        try {
+          const event: ExecutionEvent = JSON.parse(tail);
+          console.log(`✅ Parsed tail event:`, event.type, event);
+          if (!settled) onEvent(event);
+          if (event.type === "done") {
+            await safeResolve({ artifactId: event.artifactId });
+            return;
+          }
+          if (event.type === "step_error" || event.type === "fatal") {
+            await safeReject(new Error((event as any).error || "Website generation failed"));
+            return;
+          }
+        } catch (e) {
+          console.warn('❌ Failed to parse tail:', e);
+        }
+      }
+
+      if (!settled) {
+        console.error('❌ Stream ended without done/error event');
+        await safeReject(new Error("Stream ended without completion"));
+      }
     } catch (error) {
-      clearTimeout(timeout);
-      safeReject(error);
+      // Если это AbortError (мы сами отменили) — пробрасываем как есть/как timeout
+      await safeReject(error);
     }
   });
 }
@@ -344,36 +443,46 @@ export const useChatSend = ({
               // ваш текущий onEvent/update
               console.log('🎯 Execution event:', event);
 
-              if (event?.type === "done" && typeof (event as any).artifactId === "number") {
-                execState.done = true;
-                execState.artifactId = (event as any).artifactId;
-              }
-
-              setExecutionSteps(prev => {
-                const existingStep = prev.find(s => s.id === event.id);
-                if (existingStep) {
-                  // Обновляем существующий шаг
-                  return prev.map(s =>
-                    s.id === event.id
-                      ? {
-                          ...s,
-                          status: event.type === 'step_start' ? 'active' :
-                                 event.type === 'step_done' ? 'completed' :
-                                 event.type === 'step_error' ? 'error' : s.status,
-                          error: event.type === 'step_error' ? event.error : s.error
-                        }
-                      : s
-                  );
-                } else if (event.type === 'step_start') {
-                  // Добавляем новый шаг
-                  return [...prev, {
-                    id: event.id,
-                    label: event.label,
-                    status: 'active' as const
-                  }];
+              try {
+                if (event?.type === "done" && typeof (event as any).artifactId === "number") {
+                  execState.done = true;
+                  execState.artifactId = (event as any).artifactId;
                 }
-                return prev;
-              });
+
+                setExecutionSteps(prev => {
+                  try {
+                    const existingStep = prev.find(s => s.id === event.id);
+                    if (existingStep) {
+                      // Обновляем существующий шаг
+                      return prev.map(s =>
+                        s.id === event.id
+                          ? {
+                              ...s,
+                              status: event.type === 'step_start' ? 'active' :
+                                     event.type === 'step_done' ? 'completed' :
+                                     event.type === 'step_error' ? 'error' : s.status,
+                              error: event.type === 'step_error' ? event.error : s.error
+                            }
+                          : s
+                      );
+                    } else if (event.type === 'step_start') {
+                      // Добавляем новый шаг
+                      return [...prev, {
+                        id: event.id,
+                        label: event.label,
+                        status: 'active' as const
+                      }];
+                    }
+                    return prev;
+                  } catch (setStateError) {
+                    console.error('❌ Error in setExecutionSteps:', setStateError);
+                    return prev; // Возвращаем предыдущее состояние при ошибке
+                  }
+                });
+              } catch (onEventError) {
+                console.error('❌ Error in onEvent handler:', onEventError);
+                // Не прерываем стрим из-за ошибки в обработчике
+              }
             }
           );
 
@@ -537,8 +646,7 @@ export const useChatSend = ({
         }
       }
 
-      // Очищаем промежуточные сообщения и состояния
-      onThinkingUpdate([]);
+      // Очищаем промежуточные сообщения и состояния (кроме thinking messages - они очистятся после ответа)
       onPlanningUpdate([], -1, false);
       onSearchProgress([]);
 
@@ -595,16 +703,33 @@ export const useChatSend = ({
         },
         // Колбэк для генерации плана
         (plan: PlanStep[]) => {
+          // Не показываем план сразу, только сохраняем его в состоянии
           onPlanningUpdate(plan, -1, true);
           if (plan.length > 0) {
-            const planText = `📋 Создан план из ${plan.length} шагов:\n` +
-              plan.map((step, idx) => `${idx + 1}. ${step.step}`).join('\n');
+            // Создаем подробное текстовое описание плана вместо JSON
+            const planText = `📋 Сформирован план выполнения задачи (${plan.length} шагов):\n\n` +
+              plan.map((step, idx) => {
+                const stepNumber = idx + 1;
+                let stepText = `${stepNumber}. ${step.step}\n`;
+                if (step.description) {
+                  stepText += `   ${step.description}`;
+                }
+                if (step.searchQueries && step.searchQueries.length > 0) {
+                  const searchCount = step.searchQueries.length;
+                  const highPriority = step.searchQueries.filter(sq => sq.priority === 'high').length;
+                  const mediumPriority = step.searchQueries.filter(sq => sq.priority === 'medium').length;
+                  stepText += `\n   🔍 Планируется ${searchCount} поисковых запросов (${highPriority} высокоприоритетных, ${mediumPriority} среднеприоритетных)`;
+                }
+                return stepText;
+              }).join('\n\n');
+
+            console.log('📋 Plan converted to text and sent to thinking messages');
             onThinkingUpdate([planText]);
           }
         },
         // Колбэк для начала выполнения этапа
-        (stepIndex: number, step: PlanStep) => {
-          onPlanningUpdate([], stepIndex, false);
+        (stepIndex: number, step: PlanStep, plan: PlanStep[]) => {
+          onPlanningUpdate(plan, stepIndex, false);
         },
         // Колбэк для прогресса поиска
         (queries: string[]) => {
@@ -630,7 +755,10 @@ export const useChatSend = ({
         },
         controller.signal,
         sessionIdToUse,
-        requestId
+        requestId,
+        (text: string) => {
+          onThinkingUpdate([text]);
+        }
       );
 
       // ✅ финальный текст: сперва return value, затем накопленный стрим, затем пусто

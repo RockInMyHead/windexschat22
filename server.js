@@ -63,7 +63,10 @@ Keys: ${(rawFiles ? Object.keys(rawFiles) : []).join(", ")}
 }
 
 // Единая модель проекта (1 источник правды)
-const MODEL = "deepseek-chat";
+const MODEL = "gpt-4o-mini";
+// Load API key from environment variables
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const API_URL = "https://api.openai.com/v1/chat/completions";
 
 // Параметры для разных типов запросов
 const MODEL_PARAMS = {
@@ -208,17 +211,41 @@ app.set("trust proxy", 1);
 
 // CORS настройки с credentials для сессий
 app.use(cors({
-  origin: [
-    "https://ai.windexs.ru",
-    "https://www.ai.windexs.ru",
-    "http://ai.windexs.ru",
-    "http://www.ai.windexs.ru",
-    "http://127.0.0.1:8081",
-    "https://cute-elliot-distinctively.ngrok-free.dev"
-  ],
+  origin: function (origin, callback) {
+    // Разрешаем запросы без origin (для мобильных apps, curl etc)
+    if (!origin) return callback(null, true);
+
+    const allowedOrigins = [
+      "https://ai.windexs.ru",
+      "https://www.ai.windexs.ru",
+      "http://ai.windexs.ru",
+      "http://www.ai.windexs.ru",
+      "http://127.0.0.1:8081",
+      "http://localhost:8081",
+      "http://localhost:3000",
+      "http://localhost:5173"
+    ];
+
+    // Разрешаем все ngrok домены (*.ngrok-free.dev, *.ngrok.io etc)
+    if (origin.match(/^https?:\/\/.*\.ngrok(-free)?\.dev$/)) {
+      return callback(null, true);
+    }
+
+    // Разрешаем localhost для разработки
+    if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+      return callback(null, true);
+    }
+
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    console.log('CORS blocked origin:', origin);
+    return callback(new Error('Not allowed by CORS'));
+  },
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "Accept"], // x-user-id больше не нужен
+  allowedHeaders: ["Content-Type", "Authorization", "Accept"],
 }));
 
 // Session middleware
@@ -244,8 +271,8 @@ app.use(session({
   }),
   cookie: {
     httpOnly: true,
-    secure: isProd,  // true в prod, false в dev (для localhost)
-    sameSite: isProd ? "none" : "lax",  // none для кросс-ориджин, lax для same-origin
+    secure: isProd || process.env.FORCE_HTTPS === 'true',  // true в prod или принудительно для ngrok
+    sameSite: isProd ? "none" : (process.env.FORCE_HTTPS === 'true' ? "none" : "lax"),  // none для кросс-ориджин (ngrok)
     maxAge: 1000 * 60 * 60 * 24 * 7,
   },
 }));
@@ -282,9 +309,10 @@ const getTokenPrices = (model) => {
     'deepseek-reasoner': { input: fixedCostUSD * 0.3, output: fixedCostUSD * 0.7 },
     // OpenAI models
     'gpt-3.5-turbo': { input: fixedCostUSD * 0.3, output: fixedCostUSD * 0.7 },
-    'gpt-4': { input: fixedCostUSD * 0.3, output: fixedCostUSD * 0.7 }
+    'gpt-4': { input: fixedCostUSD * 0.3, output: fixedCostUSD * 0.7 },
+    'gpt-4o-mini': { input: fixedCostUSD * 0.3, output: fixedCostUSD * 0.7 }
   };
-  return prices[model] || prices['deepseek-chat'];
+  return prices[model] || prices['gpt-4o-mini'];
 };
 
 // Детектор market queries
@@ -484,6 +512,56 @@ app.delete('/api/sessions/:sessionId', (req, res) => {
 
 // === Auth API ===
 
+// Создать demo пользователя и сессию для тестирования
+app.post('/api/auth/demo', (req, res) => {
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(403).json({ error: "Demo auth not available in production" });
+  }
+
+  try {
+    const { email = 'demo@example.com', username = 'Demo User' } = req.body;
+
+    // Создаем или получаем demo пользователя
+    let user = DatabaseService.getUserByEmail(email);
+
+    if (!user) {
+      console.log('📝 Creating new demo user for auth:', email);
+      const userId = DatabaseService.createUser(username, email, 10.0);
+
+      if (userId) {
+        DatabaseService.createTransaction(
+          userId,
+          'deposit',
+          10.0,
+          'Initial demo balance',
+          'demo_setup'
+        );
+      }
+      user = DatabaseService.getUserById(userId);
+    }
+
+    if (!user) {
+      return res.status(500).json({ error: "Failed to create/retrieve demo user" });
+    }
+
+    // Создаем сессию
+    req.session.userId = user.id;
+    req.session.save((err) => {
+      if (err) {
+        console.error('❌ Demo auth session save error:', err);
+        return res.status(500).json({ error: "Session save failed" });
+      }
+
+      console.log('✅ Demo auth successful for user:', user.id, user.email);
+      res.json({ user, message: "Demo authentication successful" });
+    });
+
+  } catch (error) {
+    console.error('Demo auth error:', error);
+    res.status(500).json({ error: 'Demo authentication failed' });
+  }
+});
+
 // Получить информацию о текущем пользователе
 app.get('/api/me', requireAuth, (req, res) => {
   const user = DatabaseService.getUserById(req.user.id);
@@ -587,7 +665,7 @@ app.post('/api/users/current', (req, res) => {
 
     console.log('👤 Getting/creating user:', { id, name, email });
     console.log('🔧 Environment check:', {
-      deepseek_key: !!process.env.DEEPSEEK_API_KEY,
+      openai_key: !!OPENAI_API_KEY,
       node_env: process.env.NODE_ENV,
       port: process.env.PORT
     });
@@ -719,33 +797,43 @@ app.post('/api/artifacts/generate', async (req, res) => {
       return res.status(500).json({ error: 'API key not configured on server' });
     }
 
-    const systemPrompt = `Создай простой сайт на React + TypeScript + Tailwind CSS.
-
-Верни ТОЛЬКО JSON объект без markdown:
-
+    const systemPrompt = `Ты генерируешь СТАТИЧЕСКИЙ сайт без сборки.
+Запрещено: React, TypeScript, Vite, Webpack, любые CDN/шрифты по ссылкам, node_modules, package.json.
+Нужно вернуть JSON строго в формате:
 {
   "assistantText": "Описание сайта",
   "artifact": {
-    "title": "Название",
+    "type": "website",
+    "title": "Название сайта",
     "files": {
-      "/index.html": "<!DOCTYPE html><html><body><div id='root'></div></body></html>",
-      "/src/main.tsx": "import React from 'react'; import ReactDOM from 'react-dom/client'; import App from './App'; ReactDOM.createRoot(document.getElementById('root')!).render(<App />);",
-      "/src/App.tsx": "код компонента App",
-      "/src/index.css": "@tailwind base; @tailwind components; @tailwind utilities;"
+      "/index.html": "полный HTML код",
+      "/styles.css": "полный CSS код",
+      "/app.js": "JavaScript код (будет заменен на стабильный runtime)"
     },
-    "deps": {"react": "^18.2.0", "react-dom": "^18.2.0", "tailwindcss": "^3.4.0"}
+    "deps": {}
   }
-}`;
+}
 
-    const deepseekResponse = await fetch('https://api.deepseek.com/chat/completions', {
+КРИТИЧНО: используй единый контракт классов для согласованности:
+- Навигация: меню - .nav-menu, ссылки - .nav-link, бургер - #nav-toggle с классом .nav-toggle
+- Табы: контейнер - .tab-list, кнопки - .tab с data-target="panelId", панели - .tab-panel
+- Аккордеон: заголовки - .accordion-header, контент - .accordion-content
+- Toast: #toast с классом .show для показа, иконка - .toast-icon
+- Кнопка "Наверх": #to-top с классом .visible для показа
+- Кнопки: базовый класс .btn, варианты .btn-primary и .btn-secondary
+- Тема: переключатель #theme-toggle, тема через [data-theme="dark"] на <html>
+
+Все должно работать без сборки, только чистый HTML/CSS/JS.`;
+
+    const deepseekResponse = await fetch(API_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
       },
       ...(proxyAgent && { dispatcher: proxyAgent }),
       body: JSON.stringify({
-        model: model === 'lite' ? 'deepseek-chat' : model === 'pro' ? 'deepseek-reasoner' : model,
+        model: MODEL,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: prompt }
@@ -757,9 +845,9 @@ app.post('/api/artifacts/generate', async (req, res) => {
 
     if (!deepseekResponse.ok) {
       const errorText = await deepseekResponse.text();
-      console.error(`❌ DeepSeek API Error [Artifacts] | Status: ${deepseekResponse.status} ${deepseekResponse.statusText} | Model: ${model} | Error: ${errorText.substring(0, 500)}`);
+      console.error(`❌ OpenAI API Error [Artifacts] | Status: ${deepseekResponse.status} ${deepseekResponse.statusText} | Model: ${MODEL} | Error: ${errorText.substring(0, 500)}`);
       return res.status(deepseekResponse.status).json({
-        error: 'DeepSeek API error',
+        error: 'OpenAI API error',
         details: errorText
       });
     }
@@ -1368,14 +1456,8 @@ ${instruction}
     const deepseekKey = process.env.DEEPSEEK_API_KEY;
     if (!deepseekKey) return res.status(500).json({ error: "DEEPSEEK_API_KEY is missing" });
 
-    const actualModel =
-      model === "pro" ? "deepseek-reasoner" :
-      model === "lite" ? "deepseek-chat" :
-      (typeof model === "string" && model.startsWith("deepseek-")) ? model :
-      "deepseek-chat";
-
     const upstreamBody = {
-      model: actualModel,
+      model: MODEL,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
@@ -1387,17 +1469,16 @@ ${instruction}
       ...(response_format && Object.keys(response_format).length > 0 ? { response_format } : {}),
     };
 
-    const apiUrl = "https://api.deepseek.com/chat/completions";
-    const apiResp = await fetch(apiUrl, {
+    const apiResp = await fetch(API_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${deepseekKey}` },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENAI_API_KEY}` },
       ...(proxyAgent && { dispatcher: proxyAgent }),
       body: JSON.stringify(upstreamBody),
     });
 
     if (!apiResp.ok) {
       const t = await apiResp.text().catch(() => "");
-      return res.status(apiResp.status).json({ error: "DEEPSEEK_API_error", details: t });
+      return res.status(apiResp.status).json({ error: "OpenAI_API_error", details: t });
     }
 
     const data = await apiResp.json();
@@ -2219,25 +2300,16 @@ ${webSearchResult}`,
       }
     }
 
-    // DeepSeek only
-    const deepseekKey = process.env.DEEPSEEK_API_KEY;
-    if (!deepseekKey) {
-      return res.status(500).json({ error: "No API key configured (DEEPSEEK_API_KEY is missing)" });
-    }
-
-    const apiProvider = "deepseek";
-    const actualModel =
-      model === "pro" ? "deepseek-reasoner" :
-      model === "lite" ? "deepseek-chat" :
-      (typeof model === "string" && model.startsWith("deepseek-")) ? model :
-      "deepseek-chat";
+    // OpenAI only
+    const apiProvider = "openai";
+    const actualModel = "gpt-4o-mini";
 
     const priceInfo = getTokenPrices(actualModel);
     console.log(
       `🎯 Model Mapping | Requested: "${model}" → Actual: "${actualModel}" | Price: $${priceInfo.input}/1M in, $${priceInfo.output}/1M out | Stream: ${stream}`
     );
 
-    const apiUrl = "https://api.deepseek.com/chat/completions";
+    const apiUrl = API_URL;
     const targetHost = new URL(apiUrl).hostname;
 
     // Функция для валидации и ограничения числовых параметров
@@ -2296,11 +2368,11 @@ ${webSearchResult}`,
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${deepseekKey}`,
+            Authorization: `Bearer ${OPENAI_API_KEY}`,
           },
           ...(proxyAgent && { dispatcher: proxyAgent }),
           body: JSON.stringify({
-            model: "deepseek-chat",
+            model: MODEL,
             messages: [
               {
                 role: "system",
@@ -2345,7 +2417,7 @@ ${webSearchResult}`,
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${deepseekKey}`,
+            Authorization: `Bearer ${OPENAI_API_KEY}`,
           },
           ...(proxyAgent && { dispatcher: proxyAgent }), // оставляем, если у вас undici ProxyAgent
           body: JSON.stringify({
@@ -2371,7 +2443,7 @@ ${webSearchResult}`,
         stack: err?.stack,
       });
       return res.status(502).json({
-        error: "DeepSeek upstream fetch failed",
+        error: "OpenAI upstream fetch failed",
         details: err?.message || "fetch failed",
         cause: cause?.code || cause?.message || null,
         // самое важное для диагностики:
@@ -2385,13 +2457,13 @@ ${webSearchResult}`,
     if (!apiResponse.ok) {
       const errorText = await apiResponse.text().catch(() => "");
       console.error(
-        `❌ DEEPSEEK API Error | Status: ${apiResponse.status} ${apiResponse.statusText} | Model: ${actualModel} | Error: ${errorText.substring(
+        `❌ OpenAI API Error | Status: ${apiResponse.status} ${apiResponse.statusText} | Model: ${actualModel} | Error: ${errorText.substring(
           0,
           500
         )}`
       );
       return res.status(apiResponse.status).json({
-        error: "DEEPSEEK API error",
+        error: "OpenAI API error",
         details: errorText,
       });
     }
@@ -2590,7 +2662,7 @@ ${webSearchResult}`,
 
 // Planner: генерирует план шагов для создания сайта
 // Детерминированный план - всегда одинаковый для надежности
-function makeTitleFromPrompt(prompt) {
+export function makeTitleFromPrompt(prompt) {
   return String(prompt || "Website")
     .replace(/["']/g, "")        // убираем кавычки
     .replace(/\s+/g, " ")
@@ -2598,85 +2670,308 @@ function makeTitleFromPrompt(prompt) {
     .slice(0, 60) || "Website";
 }
 
-async function planWebsite(prompt) {
-  return {
-    title: makeTitleFromPrompt(prompt),
-    deps: {},
-    steps: [
-      { id: "index",  tool: "create_file", file: "index.html",  description: "Главная страница" },
-      { id: "styles", tool: "create_file", file: "styles.css",  description: "Стили" },
-      { id: "app",    tool: "create_file", file: "app.js",      description: "JavaScript логика" },
-    ],
-  };
+export async function planWebsite(prompt) {
+  console.log(`📋 PlanWebsite called | Prompt: "${prompt?.substring(0, 100) || 'none'}..."`);
+
+  try {
+    // Validate input
+    if (!prompt || typeof prompt !== 'string') {
+      throw new Error(`Invalid prompt: ${typeof prompt}`);
+    }
+
+    console.log(`🔧 Creating title from prompt...`);
+    const title = makeTitleFromPrompt(prompt);
+    console.log(`✅ Title created: "${title}"`);
+
+    const result = {
+      title: title,
+      deps: {},
+      steps: [
+        { id: "index",  tool: "create_file", file: "index.html",  description: "Главная страница" },
+        { id: "styles", tool: "create_file", file: "styles.css",  description: "Стили" },
+        { id: "app",    tool: "create_file", file: "app.js",      description: "JavaScript логика" },
+      ],
+    };
+
+    console.log(`✅ PlanWebsite success | Title: "${result.title}" | Steps: ${result.steps.length}`);
+    return result;
+  } catch (e) {
+    console.error(`❌ PlanWebsite failed | Error: ${e?.message || String(e)}`);
+    console.error(`❌ PlanWebsite stack:`, e?.stack);
+    throw e;
+  }
 }
 
 // Executor: выполняет отдельный шаг
 async function executeStep(step, context = {}) {
   if (step.tool === "create_file") {
-    // Генерируем файл через LLM с учетом контекста плана
-    const content = await generateFile(step.file, context);
+    const content = await generateFile(step.file, context, context.signal);
     return { file: { name: step.file, content } };
   }
   throw new Error(`Unknown tool: ${step.tool}`);
 }
 
 // Генератор файла: создает содержимое файла через LLM
-async function generateFile(filename, context = {}) {
-  const { plan, prompt } = context;
+async function generateFile(filename, context = {}, outerSignal) {
+  console.log(`🎨 Starting generateFile for ${filename}`);
+  const { plan, prompt, generatedFiles = {} } = context;
 
   // Создаем специфичный промт для каждого типа файла
   let systemPrompt;
   let userPrompt;
 
+  const indexHtml = generatedFiles["/index.html"] || "";
+
   if (filename === "index.html") {
-    systemPrompt = `Создай один HTML-файл одностраничного сайта по теме: «${prompt}».
+    console.log(`📝 Creating HTML prompt for index.html, prompt length: ${prompt?.length}`);
+    systemPrompt = `Создай один HTML-файл одностраничного сайта премиум-класса по теме: «${prompt}».
 Требования:
 Верни ТОЛЬКО HTML-код (без markdown/пояснений).
 Валидный HTML5: <!doctype html>, lang, meta charset, meta viewport.
 Подключи styles.css и app.js (defer).
 Семантика: header, main, section, footer. Один h1, далее h2.
-Без внешних CDN/шрифтов/картинок; допустимы inline SVG и CSS-градиенты. Должно работать в iframe sandbox.
-Структура (обязательные id):
-header#site-header: nav#primary-nav с логотипом, якорными ссылками на секции, button#nav-toggle (aria-expanded), button#theme-toggle.
-main#main:
-section#hero: заголовок, текст, 2 CTA-кнопки (.btn.primary, .btn.ghost).
-section#features: 6+ карточек .card (h3 + текст).
-section#showcase: табы .tabs с кнопками .tab и панелями .tab-panel.
-section#pricing: 3 тарифа .pricing-grid, один .featured.
-section#faq: accordion .accordion (кнопки .accordion-trigger + панели).
-section#contact: form#contact-form (name, email, topic select, message textarea, consent checkbox) + div#form-status.
-footer#site-footer.
-button#to-top и div#toast (для уведомлений).
-Контент — конкретный под запрос пользователя, без «lorem ipsum».`;
-    userPrompt = `Создай HTML для сайта: ${prompt}`;
+Без внешних CDN/шрифтов/картинок; используй inline SVG и CSS-градиенты. Должно работать в iframe sandbox.
+Структура (обязательные id и атрибуты):
+- header#site-header: nav#primary-nav с ul.nav-menu, кнопка #theme-toggle и кнопка #nav-toggle (aria-expanded="false").
+- section#hero: .hero-grid (2 колонки). Слева: заголовок h1, описание, .hero-cta (.btn.primary, .btn.ghost), .hero-badges (3+ бейджа). Справа: .hero-art с тематическим сложным inline SVG.
+- section#features: .features-grid из 6+ карточек .card (тематическая SVG иконка + h3 + текст).
+- section#showcase (Продукция/Табы): контейнер .tab-buttons с кнопками .tab[data-tab="ID"] и панели .tab-panel[id="ID"]. Внутри панелей — .product-grid из карточек .product-card (h4, описание, .price, .btn[data-order="Название"]).
+- section#pricing: .pricing-grid из 3 тарифов, кнопка .btn[data-order="Тариф"].
+- section#faq (Аккордеон): .accordion с .accordion-item > .accordion-trigger (button, aria-expanded="false") + .accordion-content.
+- section#contact: form#contact-form (name, email, select#topic, textarea#message, checkbox[name="consent"]) + div#form-status.
+- footer#site-footer.
+- button#to-top и div#toast.
+Контент — ОЧЕНЬ конкретный под запрос пользователя, «вау» копирайтинг.`;
+    userPrompt = `Создай HTML для премиального сайта: ${prompt}`;
 
   } else if (filename === "styles.css") {
-    systemPrompt = `Создай CSS для сайта по теме «${prompt}», соответствующий структуре/селектором из HTML выше.
-Требования:
+    systemPrompt = `Создай премиальный CSS-слой для сайта по теме «${prompt}».
+Используй ПРЕДОСТАВЛЕННЫЙ HTML ниже для выбора селекторов.
 Верни ТОЛЬКО CSS-код (без markdown/пояснений).
-Mobile-first, адаптивно (2–3 брейкпоинта).
-Премиальный UI: градиентный фон + glass/blur, аккуратные тени, современная типографика, spacing.
-Используй CSS variables в :root (цвета, радиусы, тени, spacing). Поддержи [data-theme="dark"].
-Обязательные состояния: :hover, :active, :focus-visible для ссылок/кнопок/полей.
-prefers-reduced-motion (минимизировать анимации).
-Стилизуй ключевые блоки: #site-header, навигация и мобильное меню (.nav-open), #hero, .btn, .card, .tabs/.tab/.tab-panel, .pricing-grid/.featured, .accordion, форма и aria-invalid, #toast, #to-top.`;
-    userPrompt = `Создай стили для сайта: ${prompt}`;
+
+:ROOT СИСТЕМА:
+--bg:#0b1220; --panel:rgba(255,255,255,.08); --panel-strong:rgba(255,255,255,.12); --text:#eaf1ff; --muted:rgba(234,241,255,.72); --border:rgba(234,241,255,.14);
+--primary:#4f8cff; --primary2:#8a5cff; --accent:#35d07f;
+--radius:16px; --radius-sm:12px;
+--shadow: 0 12px 40px rgba(0,0,0,.35); --shadow-soft: 0 8px 24px rgba(0,0,0,.22);
+--maxw: 1120px;
+--s-1: 8px; --s-2: 12px; --s-3: 16px; --s-4: 24px; --s-5: 32px; --s-6: 48px;
+--t-fast: .18s ease; --t: .28s ease;
+
+ОСНОВНЫЕ СТИЛИ:
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; color: var(--text); background: radial-gradient(1200px 600px at 10% -10%, rgba(79,140,255,.35), transparent 60%), radial-gradient(900px 520px at 100% 0%, rgba(138,92,255,.28), transparent 55%), radial-gradient(900px 520px at 20% 110%, rgba(53,208,127,.18), transparent 55%), var(--bg);}
+body.no-scroll{overflow:hidden}
+a{color:inherit; text-decoration:none}
+a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible{outline:2px solid rgba(79,140,255,.75); outline-offset:2px;}
+main > section{padding: clamp(36px, 5vw, 72px) 16px;}
+.container{max-width: var(--maxw); margin: 0 auto;}
+
+HEADER/NAV: sticky top:0, glassmorphism backdrop-filter: blur(14px), класс .scrolled с более тёмным фоном.
+#primary-nav: flex между .nav-menu и кнопками.
+.nav-menu: flex gap:12px, ссылки с padding/border-radius/hover эффектами.
+#theme-toggle, #nav-toggle: кнопки с border/background/hover.
+
+КНОПКИ: .btn с glassmorphism, .primary с градиентом и тенью, .ghost прозрачный, .small для карточек.
+
+HERO: .hero-grid grid-template-columns: 1.2fr .8fr, gap clamp, каждый div с glassmorphism.
+.hero-cta flex gap, .hero-badges flex с бейджами.
+.hero-art svg width:100%.
+
+FEATURES: .features-grid grid-template-columns: repeat(3, 1fr), gap:16px.
+.card: glassmorphism, hover transform: translateY(-3px).
+
+ТАБЫ: .tab-buttons flex gap:10px, .tab glassmorphism, .active градиент.
+.tab-panel{display:none; opacity:0; transform: translateY(6px); transition: opacity var(--t), transform var(--t);}
+.tab-panel.active{display:block; opacity:1; transform: translateY(0);}
+
+PRODUCTS: .product-grid grid-template-columns: repeat(3, 1fr), .product-card glassmorphism.
+
+PRICING: .pricing-grid repeat(3, 1fr), второй карточка с градиентом.
+
+FAQ: .accordion grid gap:12px, .accordion-item glassmorphism, .accordion-trigger width:100%, .accordion-content padding.
+
+CONTACT: #contact-form grid-template-columns: 1fr 1fr, gap:12px, glassmorphism.
+button[type="submit"] grid-column: 1 / -1.
+
+FOOTER: padding, color muted, border-top.
+
+TOAST/#to-top: fixed позиция, opacity:0 по умолчанию, .show/.visible opacity:1.
+
+RESPONSIVE: @media (max-width: 980px) 2 колонки, @media (max-width: 768px) мобильное меню nav-menu.nav-open fixed inset:0.
+
+ФАКТИЧЕСКИЙ HTML ДЛЯ СТИЛИЗАЦИИ:
+${indexHtml || "HTML еще не сгенерирован"}`;
+    userPrompt = `Создай премиальный CSS-слой: ${prompt}`;
 
   } else if (filename === "app.js") {
-    systemPrompt = `Создай JavaScript (vanilla) для сайта по теме «${prompt}», под селекторы из HTML.
-Требования:
+    systemPrompt = `Создай защищенный JavaScript enhancement для сайта по теме «${prompt}».
+Используй ПРЕДОСТАВЛЕННЫЙ HTML ниже для поиска ID и классов.
 Верни ТОЛЬКО JS-код (без markdown/пояснений).
-Без библиотек, без внешних запросов, совместимо с iframe sandbox.
-try/catch для рискованных блоков, проверки на наличие элементов.
-Минимум 60 строк реальной логики.
-Функции (обязательно):
-Мобильное меню: #nav-toggle переключает .nav-open, обновляет aria-expanded, закрытие по Escape и по клику на ссылку.
-Smooth-scroll по якорям (scrollIntoView).
-Табы в #showcase: .tab переключает .tab-panel, aria-selected.
-Accordion в #faq: .accordion-trigger раскрывает/сворачивает панели, aria-expanded.
-Форма #contact-form: базовая валидация (required/email/consent), aria-invalid, статус в #form-status, toast через #toast.
-Scroll поведение: показать/скрыть #to-top и плавный скролл наверх.`;
-    userPrompt = `Создай JavaScript логику для сайта: ${prompt}`;
+
+((() => {
+  "use strict";
+
+  const on = (el, type, cb) => { if (el) el.addEventListener(type, cb); };
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+  const navToggle = $("#nav-toggle");
+  const navMenu = $(".nav-menu");
+  const themeToggle = $("#theme-toggle");
+  const html = document.documentElement;
+  const header = $("#site-header");
+  const toTopButton = $("#to-top");
+  const contactForm = $("#contact-form");
+  const formStatus = $("#form-status");
+  const toast = $("#toast");
+
+  const showToast = (msg) => {
+    if (!toast) return;
+    toast.textContent = msg;
+    toast.classList.add("show");
+    window.setTimeout(() => toast.classList.remove("show"), 2800);
+  };
+
+  // ===== Nav mobile =====
+  const closeMenu = () => {
+    if (!navMenu) return;
+    navMenu.classList.remove("nav-open");
+    document.body.classList.remove("no-scroll");
+    if (navToggle) navToggle.setAttribute("aria-expanded", "false");
+  };
+
+  on(navToggle, "click", () => {
+    if (!navMenu) return;
+    const open = !navMenu.classList.contains("nav-open");
+    navMenu.classList.toggle("nav-open", open);
+    document.body.classList.toggle("no-scroll", open);
+    navToggle.setAttribute("aria-expanded", open ? "true" : "false");
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeMenu();
+  });
+
+  $$(".nav-menu a[href^='#']").forEach((a) => on(a, "click", () => closeMenu()));
+
+  // ===== Theme =====
+  const applyTheme = (t) => {
+    if (t === "dark") html.setAttribute("data-theme", "dark");
+    else html.removeAttribute("data-theme");
+  };
+
+  on(themeToggle, "click", () => {
+    const isDark = html.getAttribute("data-theme") === "dark";
+    const next = isDark ? "light" : "dark";
+    localStorage.setItem("theme", next);
+    applyTheme(next);
+    showToast(next === "dark" ? "Тёмная тема включена" : "Светлая тема включена");
+  });
+
+  // restore theme
+  const savedTheme = localStorage.getItem("theme");
+  if (savedTheme) applyTheme(savedTheme);
+
+  // ===== Smooth scroll (anchors) =====
+  $$("#primary-nav a[href^='#']").forEach((a) => {
+    on(a, "click", (e) => {
+      const href = a.getAttribute("href");
+      if (!href || href === "#") return;
+      const target = $(href);
+      if (!target) return;
+      e.preventDefault();
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
+
+  // ===== Tabs =====
+  const tabs = $$(".tab");
+  const panels = $$(".tab-panel");
+
+  const setActiveTab = (id) => {
+    tabs.forEach((t) => t.classList.toggle("active", t.dataset.tab === id));
+    panels.forEach((p) => p.classList.toggle("active", p.id === id));
+  };
+
+  if (tabs.length && panels.length) {
+    // init: если ни один panel не активен — активируем первый таб
+    const initial = panels.find((p) => p.classList.contains("active"))?.id || tabs[0].dataset.tab;
+    if (initial) setActiveTab(initial);
+
+    tabs.forEach((tab) => {
+      on(tab, "click", () => {
+        const id = tab.dataset.tab;
+        if (!id) return;
+        setActiveTab(id);
+      });
+    });
+  }
+
+  // ===== Order buttons -> fill form + scroll =====
+  const messageTextarea = $("#message");
+  const contactSection = $("#contact");
+
+  $$("[data-order]").forEach((btn) => {
+    on(btn, "click", () => {
+      const name = btn.getAttribute("data-order") || "Запрос";
+      if (messageTextarea) messageTextarea.value = \`Интересует: \${name}. Нужна консультация по покупке/подписке.\`;
+      if (contactSection) contactSection.scrollIntoView({ behavior: "smooth", block: "start" });
+      showToast(\`Ок: \${name}. Заполните форму — мы свяжемся.\`);
+    });
+  });
+
+  // ===== Accordion =====
+  $$(".accordion-trigger").forEach((trigger) => {
+    on(trigger, "click", () => {
+      const expanded = trigger.getAttribute("aria-expanded") === "true";
+      trigger.setAttribute("aria-expanded", expanded ? "false" : "true");
+    });
+  });
+
+  // ===== Scroll UX =====
+  window.addEventListener("scroll", () => {
+    const y = window.scrollY || 0;
+
+    if (header) header.classList.toggle("scrolled", y > 20);
+    if (toTopButton) toTopButton.classList.toggle("visible", y > 420);
+  });
+
+  on(toTopButton, "click", () => {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  });
+
+  // ===== Form =====
+  on(contactForm, "submit", (e) => {
+    e.preventDefault();
+    if (!contactForm) return;
+
+    const required = $$("input[required], select[required], textarea[required]", contactForm);
+    const consent = $("input[name='consent']", contactForm);
+
+    let ok = true;
+    required.forEach((el) => {
+      const v = (el.value || "").trim();
+      if (!v) ok = false;
+    });
+    if (consent && !consent.checked) ok = false;
+
+    if (!ok) {
+      if (formStatus) formStatus.textContent = "Пожалуйста, заполните обязательные поля и согласие.";
+      showToast("Проверьте форму: обязательные поля не заполнены.");
+      return;
+    }
+
+    if (formStatus) formStatus.textContent = "Заявка принята. Мы свяжемся с вами в ближайшее время.";
+    showToast("Спасибо! Заявка отправлена.");
+    contactForm.reset();
+  });
+})());
+
+ФАКТИЧЕСКИЙ HTML ДЛЯ ОБРАБОТКИ:
+${indexHtml || "HTML еще не сгенерирован"}`;
+    userPrompt = `Создай защищенный JS enhancement: ${prompt}`;
   }
 
   const messages = [
@@ -2688,112 +2983,470 @@ Scroll поведение: показать/скрыть #to-top и плавны
     throw new Error(`Unknown file type: ${filename}`);
   }
 
-  const resp = await fetch("https://api.deepseek.com/chat/completions", {
+  // ✅ Таймауты на файл (чтобы не висеть бесконечно на стороне OpenAI)
+  const stepTimeoutMs = 180_000; // 180 секунд на любой файл
+
+  const ac = new AbortController();
+  const t = setTimeout(() => {
+    try { ac.abort(new Error(`OpenAI timeout for ${filename}`)); } catch {}
+  }, stepTimeoutMs);
+
+  // ✅ Склеиваем abort: если клиент отключился — рвём запрос
+  if (outerSignal) {
+    if (outerSignal.aborted) ac.abort();
+    outerSignal.addEventListener("abort", () => {
+      try { ac.abort(); } catch {}
+    }, { once: true });
+  }
+
+  try {
+    const fetchOptions = {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        messages: messages,
+        ...ARTIFACT_PARAMS
+      }),
+      signal: ac.signal,
+      ...(proxyAgent && { dispatcher: proxyAgent })
+    };
+
+    console.log(`🚀 Making OpenAI API call for ${filename} | Proxy: ${!!proxyAgent}`);
+    console.log(`📋 API Request details:`, {
+      model: MODEL,
+      messages: messages.length,
+      temperature: ARTIFACT_PARAMS.temperature,
+      max_tokens: ARTIFACT_PARAMS.max_tokens
+    });
+
+    let resp;
+    try {
+      resp = await fetch(API_URL, fetchOptions).finally(() => {
+      clearTimeout(t);
+    });
+      console.log(`📡 API Response status: ${resp.status} ${resp.statusText}`);
+    } catch (fetchError) {
+      clearTimeout(t);
+      console.error(`❌ Fetch failed for ${filename}:`, fetchError);
+      throw new Error(`OpenAI fetch failed for ${filename}: ${fetchError?.name === "AbortError" ? "timeout" : (fetchError?.message || fetchError)}`);
+    }
+
+    if (!resp.ok) {
+      const errorText = await resp.text().catch(() => "");
+      throw new Error(`OpenAI API error for ${filename}: ${resp.status} ${errorText.slice(0, 500)}`);
+    }
+
+    const data = await resp.json();
+    let content = data?.choices?.[0]?.message?.content;
+
+    if (!content) throw new Error(`Failed to generate ${filename}`);
+
+    console.log(`✅ OpenAI API call completed for ${filename}, content length: ${content.length}`);
+
+    // нормальная вырезка ```...```
+    if (content.includes("```")) {
+      const m = content.match(/```(?:html|css|javascript|js)?\n?([\s\S]*?)\n?```/i);
+      if (m) content = m[1];
+    }
+
+    return String(content).trim();
+  } catch (e) {
+    console.error(`❌ generateFile failed for ${filename}:`, e?.message || String(e));
+    throw new Error(`Failed to generate ${filename}: ${e?.message || String(e)}`);
+  }
+}
+
+// --- helpers for website execution ---
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+// Template rendering (mini-mustache)
+function escapeHtml(s) {
+  return String(s)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function getPath(obj, path) {
+  return path.split(".").reduce((acc, k) => (acc && acc[k] !== undefined ? acc[k] : undefined), obj);
+}
+
+function renderTpl(tpl, ctx) {
+  let out = String(tpl);
+
+  // sections arrays: {{#items}}...{{/items}}
+  const sectionRe = /{{#\s*([a-zA-Z0-9_.-]+)\s*}}([\s\S]*?){{\/\s*\1\s*}}/g;
+  out = out.replace(sectionRe, (_, key, inner) => {
+    const val = getPath(ctx, key);
+    if (Array.isArray(val)) {
+      return val.map((item) => {
+        const localCtx =
+          item && typeof item === "object"
+            ? { ...ctx, ...item }
+            : { ...ctx, ".": item };
+        return renderTpl(inner, localCtx);
+      }).join("");
+    }
+    return val ? renderTpl(inner, ctx) : "";
+  });
+
+  // vars: {{a.b}} or {{.}}
+  const varRe = /{{\s*([a-zA-Z0-9_.-]+)\s*}}/g;
+  out = out.replace(varRe, (_, key) => escapeHtml(getPath(ctx, key) ?? ""));
+
+  return out;
+}
+
+// Deterministic template selection
+function fnv1a(str) {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function pickTemplate(templates, prompt, sessionId) {
+  const seed = fnv1a(`${sessionId}|${prompt}`);
+  return templates[seed % templates.length];
+}
+
+// Extract JSON from LLM response
+function extractJsonMaybe(s) {
+  if (!s) return null;
+  const txt = String(s);
+  const m = txt.match(/```json\s*([\s\S]*?)```/i) || txt.match(/```([\s\S]*?)```/);
+  return (m ? m[1] : txt).trim();
+}
+
+// Generate content JSON using DeepSeek
+async function generateWebsiteContentJson(prompt) {
+  const systemPrompt = `
+Ты генерируешь ТОЛЬКО валидный JSON (без markdown, без пояснений).
+Язык: русский. Никаких внешних ссылок/картинок/шрифтов/CDN.
+
+Схема JSON (строго):
+{
+  "brand": "string",
+  "tagline": "string",
+  "hero": {
+    "title": "string",
+    "subtitle": "string",
+    "primaryCta": "string",
+    "secondaryCta": "string",
+    "badges": ["string","string","string"]
+  },
+  "features": [
+    {"icon":"string","title":"string","text":"string"},
+    ... (ровно 6)
+  ],
+  "tabs": [
+    {"id":"services","label":"string","cards":[{"title":"string","text":"string","meta":"string"}, ... (3)]},
+    {"id":"cases","label":"string","cards":[... (3)]},
+    {"id":"reviews","label":"string","cards":[... (3)]}
+  ],
+  "pricing": [
+    {"name":"string","price":"string","bullets":["string","string","string"],"featured":false},
+    {"name":"string","price":"string","bullets":["..."],"featured":true},
+    {"name":"string","price":"string","bullets":["..."],"featured":false}
+  ],
+  "faq": [
+    {"q":"string","a":"string"},
+    ... (5)
+  ],
+  "contact": {
+    "phone":"string",
+    "email":"string",
+    "address":"string",
+    "hours":"string"
+  },
+  "seo": {
+    "title":"string",
+    "description":"string"
+  }
+}
+
+Ограничения:
+- коротко, "по делу": title до 60 символов, description до 150.
+- meta в cards: например "от 1 500 ₽ / 60 мин / гарантия 6 мес" — строкой.
+- phone/email могут быть плейсхолдерами, но реалистично.
+`.trim();
+
+  const userPrompt = `Тематика сайта: ${prompt}. Сгенерируй контент по схеме.`;
+
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), 300000); // Увеличено до 5 минут для генерации контента
+
+  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${process.env.DEEPSEEK_API_KEY}`,
-      "Content-Type": "application/json"
+      "Authorization": `Bearer ${OPENAI_API_KEY}`,
+      "Content-Type": "application/json",
     },
     body: JSON.stringify({
       model: MODEL,
-      messages: messages,
-      ...ARTIFACT_PARAMS
-    })
-  });
+      temperature: 0.8,
+      max_tokens: 2000, // Увеличено для полного контента
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+    }),
+    signal: ac.signal
+  }).finally(() => clearTimeout(t));
 
-  const data = await resp.json();
-  const content = data?.choices?.[0]?.message?.content;
-
-  if (!content) {
-    throw new Error(`Failed to generate ${filename}`);
+  if (!resp.ok) {
+    const txt = await resp.text().catch(() => "");
+    throw new Error(`OpenAI API error (content.json): ${resp.status} ${txt.slice(0, 500)}`);
   }
 
-  // Очищаем от возможного markdown
-  return content.replace(/^```.*$/gm, '').trim();
+  const data = await resp.json();
+  const raw = data?.choices?.[0]?.message?.content;
+  const jsonText = extractJsonMaybe(raw);
+
+  try {
+    return JSON.parse(jsonText);
+  } catch (e) {
+    throw new Error(`Invalid content.json from model: ${String(e?.message || e)}`);
+  }
+}
+
+// Load website templates from disk
+function loadWebsiteTemplates() {
+  const base = path.resolve(process.cwd(), "website_templates");
+
+  const loadPack = (name) => {
+    const dir = path.join(base, name);
+    return {
+      name,
+      indexHtmlTpl: fs.readFileSync(path.join(dir, "index.html.tpl"), "utf-8"),
+      stylesCssTpl: fs.readFileSync(path.join(dir, "styles.css.tpl"), "utf-8"),
+      appJs: fs.readFileSync(path.join(dir, "app.js"), "utf-8"),
+    };
+  };
+
+  return ["aurora", "mono", "editorial"].map(loadPack);
+}
+
+function minifyHtml(s) {
+  return String(s).replace(/>\s+</g, "><").trim();
+}
+function minifyCss(s) {
+  return String(s)
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\s+/g, " ")
+    .replace(/\s*([{}:;,])\s*/g, "$1")
+    .trim();
+}
+function minifyJs(s) {
+  // безопасная минификация без удаления комментариев (чтобы не ломать строки/regex)
+  return String(s)
+    .split("\n")
+    .map(l => l.trimEnd())
+    .filter((l, idx, arr) => !(l === "" && arr[idx - 1] === ""))
+    .join("\n")
+    .trim();
+}
+
+async function createArtifactWithRetry(fn, attempts = 3) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return fn();
+    } catch (e) {
+      const msg = e?.message || String(e);
+      if (!/SQLITE_BUSY|database is locked/i.test(msg) || i === attempts - 1) throw e;
+      console.warn(`⚠️ SQLITE_BUSY, retry ${i + 1}/${attempts}...`);
+      await sleep(150 * (i + 1));
+    }
+  }
 }
 
 // Website execution endpoint с streaming
-app.post("/api/website/execute", requireAuth, async (req, res) => {
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.setHeader("Transfer-Encoding", "chunked");
+app.post("/api/website/execute", async (req, res) => {
+  res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
 
-  const send = (event) => {
-    res.write(JSON.stringify(event) + "\n");
+  // Пробиваем буферизацию на уровне сокета
+  req.socket.setTimeout(0);
+  res.socket?.setTimeout?.(0);
+  res.socket?.setNoDelay?.(true);
+
+  const { prompt, sessionId } = req.body || {};
+
+  const PAD = " ".repeat(4096); // 4KB padding для heartbeat
+
+  const writeLine = (line) =>
+    new Promise((resolve) => {
+      try {
+        const ok = res.write(line);
+        if (ok) return resolve(true);
+        res.once("drain", () => resolve(true));
+      } catch {
+        resolve(false);
+      }
+    });
+
+  const send = async (event) => {
+    if (res.writableEnded) return;
+    await writeLine(JSON.stringify(event) + "\n");
+    // Пробиваем буферы прокси/браузера
+    await writeLine(PAD + "\n");
+    res.flush?.();
   };
 
+  const fail = async (msg) => {
+    await send({ type: "fatal", error: msg });
+    clearInterval(pingTimer);
+    res.end();
+  };
+
+  const pingTimer = setInterval(() => {
+    send({ type: "ping", ts: Date.now() });
+  }, 15000); // Каждый 15 секунд
+
   try {
-    const { prompt, sessionId } = req.body;
+    await send({ type: "ping", ts: Date.now() });
 
-    if (!prompt || !sessionId) {
-      return res.status(400).json({ error: "Missing prompt or sessionId" });
+    // 1️⃣ Шаг: План и выбор шаблона
+    await send({ type: "step_start", id: "plan", label: "Формирую план сайта" });
+
+    const templates = loadWebsiteTemplates();
+    const template = pickTemplate(templates, prompt, sessionId);
+    console.log(`🎨 Selected template: ${template.name}`);
+
+    await send({ type: "step_done", id: "plan" });
+
+    // 2️⃣ Шаг: Генерация контента
+    await send({ type: "step_start", id: "content", label: "Генерирую контент" });
+
+    let content;
+    try {
+      content = await generateWebsiteContentJson(prompt);
+      console.log(`📝 Content generated for brand: ${content.brand}`);
+    } catch (err) {
+      console.error("❌ Content generation failed:", err);
+      return fail(`Ошибка генерации контента: ${err.message}`);
     }
 
-    // STEP 1 — PLAN
-    send({ type: "step_start", id: "plan", label: "Формирую план сайта" });
+    await send({ type: "step_done", id: "content" });
 
-    const plan = await planWebsite(prompt);
+    // Подготовка view-model с гарантированными id табов
+    const vm = {
+      ...content,
+      year: new Date().getFullYear(),
+      tabs: [
+        { id: "services", ...(content.tabs?.find(t => t.id === "services") || content.tabs?.[0] || {}), idFixed: "services" },
+        { id: "cases", ...(content.tabs?.find(t => t.id === "cases") || content.tabs?.[1] || {}), idFixed: "cases" },
+        { id: "reviews", ...(content.tabs?.find(t => t.id === "reviews") || content.tabs?.[2] || {}), idFixed: "reviews" },
+      ].map((t, idx) => ({
+        ...t,
+        id: ["services","cases","reviews"][idx],
+        label: t.label || `Вкладка ${idx + 1}`
+      }))
+    };
 
-    // ✅ Санитайзер плана (фильтруем только нужные файлы)
-    plan.steps = (Array.isArray(plan.steps) ? plan.steps : []).filter(
-      s => s?.tool === "create_file" && ["index.html","styles.css","app.js"].includes(s.file)
-    );
+    // 3️⃣ Шаг: Рендеринг файлов
+    await send({ type: "step_start", id: "render", label: "Создаю страницы" });
 
-    // если модель не дала нужные шаги — подставляем дефолт
-    if (plan.steps.length !== 3) {
-      plan.steps = [
-        { id: "index", tool: "create_file", file: "index.html", description: "Главная страница" },
-        { id: "styles", tool: "create_file", file: "styles.css", description: "Стили" },
-        { id: "app", tool: "create_file", file: "app.js", description: "JavaScript логика" },
-      ];
-    }
-
-    send({ type: "step_done", id: "plan" });
-
-    // STEP 2 — EXECUTE
     const files = {};
-    const executionContext = { plan, prompt };
+    try {
+      files["/index.html"] = renderTpl(template.indexHtmlTpl, vm);
+      files["/styles.css"] = renderTpl(template.stylesCssTpl, vm);
+      files["/app.js"] = template.appJs;
 
-    for (const step of plan.steps) {
-      send({ type: "step_start", id: step.id, label: step.description || `Создаю ${step.file}` });
-
-      try {
-        const result = await executeStep(step, executionContext);
-        if (result.file) {
-          files[`/${result.file.name}`] = result.file.content; // Добавляем слэш в начало
-        }
-        send({ type: "step_done", id: step.id });
-      } catch (stepError) {
-        console.error(`Step ${step.id} failed:`, stepError);
-        send({ type: "step_error", id: step.id, error: stepError.message });
-        throw stepError; // Прерываем выполнение
-      }
+      console.log(`✅ Files rendered: HTML ${files["/index.html"].length} chars, CSS ${files["/styles.css"].length} chars`);
+    } catch (err) {
+      console.error("❌ Template rendering failed:", err);
+      return fail(`Ошибка рендеринга шаблона: ${err.message}`);
     }
 
-    // STEP 3 — SAVE
-    send({ type: "step_start", id: "save", label: "Сохраняю сайт" });
+    await send({ type: "step_done", id: "render" });
 
-    const artifactId = DatabaseService.createArtifact(
-      parseInt(sessionId),
-      "website",
-      plan.title,
-      files,
-      plan.deps || null
-    );
+    // 4️⃣ Сохраняем
+    await send({ type: "step_start", id: "save", label: "Сохраняю сайт" });
 
-    console.log('🎯 Artifact created with ID:', artifactId, 'Type:', typeof artifactId);
+    try {
+      // 1) обязательные файлы
+      const required = ["/index.html", "/styles.css", "/app.js"];
+      const missing = required.filter(p => !files[p] || !String(files[p]).trim());
+      if (missing.length) {
+        throw new Error(`Missing required files: ${missing.join(", ")}`);
+      }
 
-    send({ type: "step_done", id: "save" });
+      // 2) лимит размера (как у вас в /api/artifacts)
+      const maxSize = 400 * 1024; // 400KB
+      const sizeOf = (obj) => Object.values(obj).reduce((s, v) => s + String(v).length, 0);
 
-    // FINISH
-    const finalMessage = JSON.stringify({ type: "done", artifactId });
-    console.log('🎯 Sending final message:', finalMessage);
-    send({ type: "done", artifactId });
-    res.end();
+      let totalSize = sizeOf(files);
+      console.log(`📦 Initial total size: ${Math.round(totalSize / 1024)}KB`);
 
+      // 3) если жирно — минифицируем (дёшево и эффективно)
+      if (totalSize > maxSize) {
+        console.log(`⚠️ Artifact too large (${Math.round(totalSize / 1024)}KB), minifying...`);
+        files["/index.html"] = minifyHtml(files["/index.html"]);
+        files["/styles.css"] = minifyCss(files["/styles.css"]);
+        files["/app.js"] = minifyJs(files["/app.js"]);
+
+        const after = sizeOf(files);
+        console.log(`📦 Size after minify: ${Math.round(after / 1024)}KB`);
+        
+        if (after > maxSize) {
+          throw new Error(
+            `Artifact too large: ${Math.round(totalSize / 1024)}KB (after minify ${Math.round(after / 1024)}KB). Max 400KB. ` +
+            `Решение: снижайте max_tokens/упрощайте промпты генерации.`
+          );
+        }
+        totalSize = after;
+      }
+
+      // 4) безопасные дефолты
+      const safeTitle = content?.seo?.title && String(content.seo.title).trim() ? content.seo.title : content?.brand || "Website";
+
+      // 5) ретрай на SQLITE_BUSY + подробная диагностика
+      const artifactId = await createArtifactWithRetry(() =>
+        DatabaseService.createArtifact(
+        parseInt(sessionId),
+          "website",
+          safeTitle,
+        files,
+          null
+        )
+      );
+
+      console.log(`✅ Artifact saved with ID: ${artifactId}`);
+      await send({ type: "step_done", id: "save" });
+
+      // ✅ Успешно
+      await send({ type: "done", artifactId });
+      clearInterval(pingTimer);
+      res.end();
   } catch (e) {
-    console.error("Website execution error:", e);
-    send({ type: "step_error", id: "fatal", error: e.message });
+    const msg = e?.message || String(e);
+      // Если DatabaseService предоставляет getLastError, используем его
+      const lastDb = typeof DatabaseService.getLastError === 'function' ? DatabaseService.getLastError() : null;
+      const full = lastDb ? `${msg} | DB: ${lastDb}` : msg;
+
+      console.error("❌ SAVE failed:", e);
+      if (lastDb) console.error("❌ DB last error:", lastDb);
+
+      await send({ type: "step_error", id: "save", error: full });
+      await send({ type: "fatal", error: full });
+    clearInterval(pingTimer);
     res.end();
+  }
+  } catch (e) {
+    console.error("❌ Fatal error:", e);
+    fail("Непредвиденная ошибка генерации сайта");
   }
 });
 
@@ -2887,8 +3540,7 @@ app.post("/api/users/:id/deduct-tokens", requireAuth, (req, res) => {
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
-  const deepseekKey = process.env.DEEPSEEK_API_KEY;
-  const openaiKey = process.env.OPENAI_API_KEY;
+  const openaiKey = OPENAI_API_KEY;
 
   res.json({
     status: 'ok',
@@ -2896,9 +3548,8 @@ app.get('/api/health', (req, res) => {
     environment: {
       node_env: process.env.NODE_ENV,
       port: process.env.PORT,
-      deepseek_key_configured: !!deepseekKey,
       openai_key_configured: !!openaiKey,
-      deepseek_key_prefix: deepseekKey ? deepseekKey.substring(0, 10) + '...' : null,
+      openai_key_prefix: openaiKey ? openaiKey.substring(0, 10) + '...' : null,
     },
     database: {
       path: DB_PATH,
@@ -2924,8 +3575,8 @@ app.get('/api/debug', (req, res) => {
         messages: messageCount
       },
       environment: {
-        deepseek_key: process.env.DEEPSEEK_API_KEY ? 'configured' : 'missing',
-        openai_key: process.env.OPENAI_API_KEY ? 'configured' : 'missing',
+        openai_key: OPENAI_API_KEY ? 'configured' : 'missing',
+        openai_key_prefix: OPENAI_API_KEY ? OPENAI_API_KEY.substring(0, 10) + '...' : null,
         node_env: process.env.NODE_ENV,
         port: process.env.PORT
       }
