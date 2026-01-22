@@ -257,7 +257,7 @@ app.use(cors({
 const isProd = process.env.NODE_ENV === "production";
 
 // Рекомендуемый writable каталог в контейнере (под volume)
-const SESSION_DIR = process.env.SESSION_DIR || (process.env.NODE_ENV === 'production' ? "/data/sessions" : path.join(process.cwd(), "data", "sessions"));
+const SESSION_DIR = process.env.SESSION_DIR || (process.env.NODE_ENV === 'production' ? path.join(process.cwd(), "data", "sessions") : path.join(process.cwd(), "data", "sessions"));
 fs.mkdirSync(SESSION_DIR, { recursive: true });
 
 // Важно для secure cookies за reverse-proxy (nginx)
