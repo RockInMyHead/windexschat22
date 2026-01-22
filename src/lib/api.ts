@@ -251,6 +251,13 @@ class ApiClient {
     });
   }
 
+  // Generate chat summary
+  async generateChatSummary(sessionId: number): Promise<{ summary: string }> {
+    return this.request(`/sessions/${sessionId}/summary`, {
+      method: 'POST',
+    });
+  }
+
 }
 
 // OpenAI TTS клиент
@@ -321,22 +328,14 @@ class OpenAITTSClient {
       ...options
     });
   }
-  
-  // Generate chat summary
-  async generateChatSummary(sessionId: number): Promise<{ summary: string }> {
-    return this.request(`/sessions/${sessionId}/summary`, {
-      method: 'POST',
-    });
-  }
 }
 
 export const ttsClient = new OpenAITTSClient();
 
-
 // Создаем apiClient как объект с явными методами для лучшей совместимости с bundler
 const apiClientInstance = new ApiClient();
 
-// Создаем прокси-объект, который явно копирует все методы
+// Экспортируем только методы, которые существуют в ApiClient
 export const apiClient = {
   createSession: apiClientInstance.createSession.bind(apiClientInstance),
   getAllSessions: apiClientInstance.getAllSessions.bind(apiClientInstance),
@@ -344,14 +343,15 @@ export const apiClient = {
   saveMessage: apiClientInstance.saveMessage.bind(apiClientInstance),
   updateSessionTitle: apiClientInstance.updateSessionTitle.bind(apiClientInstance),
   deleteSession: apiClientInstance.deleteSession.bind(apiClientInstance),
-  getArtifact: apiClientInstance.getArtifact.bind(apiClientInstance),
-  getArtifactsBySession: apiClientInstance.getArtifactsBySession.bind(apiClientInstance),
-  editWebsiteArtifact: apiClientInstance.editWebsiteArtifact.bind(apiClientInstance),
+  healthCheck: apiClientInstance.healthCheck.bind(apiClientInstance),
+  get: apiClientInstance.get.bind(apiClientInstance),
+  post: apiClientInstance.post.bind(apiClientInstance),
   me: apiClientInstance.me.bind(apiClientInstance),
   logout: apiClientInstance.logout.bind(apiClientInstance),
-  updateBalance: apiClientInstance.updateBalance.bind(apiClientInstance),
-  generateTTS: apiClientInstance.generateTTS.bind(apiClientInstance),
-  generateTTSRu: apiClientInstance.generateTTSRu.bind(apiClientInstance),
-  generateTTSEn: apiClientInstance.generateTTSEn.bind(apiClientInstance),
+  createArtifact: apiClientInstance.createArtifact.bind(apiClientInstance),
+  getArtifact: apiClientInstance.getArtifact.bind(apiClientInstance),
+  updateArtifact: apiClientInstance.updateArtifact.bind(apiClientInstance),
+  getArtifactsBySession: apiClientInstance.getArtifactsBySession.bind(apiClientInstance),
+  editWebsiteArtifact: apiClientInstance.editWebsiteArtifact.bind(apiClientInstance),
   generateChatSummary: apiClientInstance.generateChatSummary.bind(apiClientInstance)
 };
