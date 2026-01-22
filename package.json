@@ -13,7 +13,9 @@
     "build": "cp node_modules/pdfjs-dist/build/pdf.worker.min.mjs public/ && vite build",
     "build:dev": "cp node_modules/pdfjs-dist/build/pdf.worker.min.mjs public/ && vite build --mode development",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "commit": "./auto-commit.sh",
+    "commit:watch": "./commit-watch.sh"
   },
   "dependencies": {
     "@codesandbox/sandpack-react": "^2.20.0",
