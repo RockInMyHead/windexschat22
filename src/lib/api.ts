@@ -321,6 +321,13 @@ class OpenAITTSClient {
       ...options
     });
   }
+  
+  // Generate chat summary
+  async generateChatSummary(sessionId: number): Promise<{ summary: string }> {
+    return this.request(`/sessions/${sessionId}/summary`, {
+      method: 'POST',
+    });
+  }
 }
 
 export const ttsClient = new OpenAITTSClient();

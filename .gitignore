@@ -119,12 +119,25 @@ Thumbs.db
 
 # Cookies and sessions
 cookies.txt
+cookies*.txt
+
+# Archive files
+*.tar.gz
+*.zip
+*.rar
 
 # Test files
 test-*.html
 test-*.js
 
+# Documentation files
+*_FIX_README.md
+*_FIX_CHECKLIST.md
+*_IMPLEMENTATION.md
+*_SETUP.md
+
 # Backup files
 *.bak
 *.backup
+*.orig
 *~

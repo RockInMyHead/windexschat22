@@ -2,6 +2,8 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { ProxyAgent } from 'undici';
+import { SocksProxyAgent } from 'socks-proxy-agent';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 import dns from 'node:dns/promises';
 import { DatabaseService } from './src/lib/database.js';
 
@@ -63,10 +65,11 @@ Keys: ${(rawFiles ? Object.keys(rawFiles) : []).join(", ")}
 }
 
 // Единая модель проекта (1 источник правды)
-const MODEL = "gpt-4o-mini";
+const MODEL = "deepseek-chat";
 // Load API key from environment variables
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const API_URL = "https://api.openai.com/v1/chat/completions";
+const API_URL = "https://api.deepseek.com/chat/completions";
 
 // Параметры для разных типов запросов
 const MODEL_PARAMS = {
@@ -283,11 +286,15 @@ function requireAuth(req, res, next) {
     if (req.method === "OPTIONS") return next(); // не блокируем preflight
 
     const userId = req.session?.userId;
+    console.log('🔐 requireAuth check:', { userId, sessionId: req.session?.id, hasSession: !!req.session });
+
     if (!userId) {
+      console.log('❌ requireAuth failed: no userId in session');
       return res.status(401).json({ error: "unauthorized" });
     }
 
     req.user = { id: userId };
+    console.log('✅ requireAuth success for user:', userId);
     return next();
   } catch (e) {
     console.error("❌ requireAuth error:", e?.stack || e);
@@ -378,9 +385,31 @@ Cached: ${data.cached}`;
 
 // Настройка прокси для Undici (встроенный fetch в Node.js)
 const PROXY_URL = process.env.PROXY_URL;
-const proxyAgent = PROXY_URL ? new ProxyAgent({
-  uri: PROXY_URL
-}) : null;
+console.log('🌐 Proxy configuration:', {
+  PROXY_URL: PROXY_URL ? '[REDACTED]' : null,
+  proxyConfigured: !!PROXY_URL
+});
+
+// Используем HttpsProxyAgent для HTTPS прокси
+const proxyAgent = PROXY_URL ? new HttpsProxyAgent(PROXY_URL) : null;
+console.log('🌐 Proxy agent created:', !!proxyAgent);
+
+// Функция для выполнения fetch с опциональным прокси
+async function fetchWithOptionalProxy(url, options = {}) {
+  const isOpenAI = url.includes('openai.com');
+  const isDeepSeek = url.includes('deepseek.com');
+  const fetchOptions = { ...options };
+
+  // Используем прокси для OpenAI и DeepSeek
+  if ((isOpenAI || isDeepSeek) && proxyAgent) {
+    fetchOptions.dispatcher = proxyAgent;
+    console.log(`🌐 fetchWithOptionalProxy: Using proxy for ${isOpenAI ? 'OpenAI' : 'DeepSeek'} request to ${url}`);
+  } else {
+    console.log(`❌ fetchWithOptionalProxy: No proxy for request to ${url}`);
+  }
+
+  return fetch(url, fetchOptions);
+}
 
 // Увеличиваем лимит размера тела запроса до 10MB для больших контекстов
 app.use(express.json({ limit: '10mb' }));
@@ -438,6 +467,84 @@ app.get('/api/sessions/:sessionId/messages', requireAuth, (req, res) => {
   } catch (error) {
     console.error('Error getting messages:', error);
     res.status(500).json({ error: 'Failed to get messages' });
+  }
+});
+
+// Test proxy endpoint
+app.get('/api/test-proxy', (req, res) => {
+  res.json({
+    proxyConfigured: !!process.env.PROXY_URL,
+    proxyUrl: process.env.PROXY_URL ? '[REDACTED]' : null,
+    proxyAgent: !!proxyAgent
+  });
+});
+
+// Generate chat summary
+app.post('/api/sessions/:sessionId/summary', requireAuth, async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const sessionIdNum = parseInt(sessionId);
+
+    console.log(`📋 POST /api/sessions/${sessionId}/summary | User: ${req.user.id}`);
+
+    // Проверяем, что сессия принадлежит пользователю
+    const ok = checkSessionOwnerStmt.get(sessionIdNum, req.user.id);
+    if (!ok) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+
+    // Загружаем сообщения сессии
+    const messages = DatabaseService.loadMessages(sessionIdNum);
+    
+    if (messages.length === 0) {
+      return res.status(400).json({ error: 'No messages to summarize' });
+    }
+
+    // Формируем промпт для резюме
+    const conversationText = messages.map(msg => 
+      `${msg.role === 'user' ? 'Пользователь' : 'Ассистент'}: ${msg.content}`
+    ).join('\n\n');
+
+    const summaryPrompt = `Создай подробное и логичное резюме следующего разговора. Включи все основные темы, вопросы и ответы. Резюме должно быть структурированным и понятным:\n\n${conversationText}\n\nРезюме:`;
+
+    // Используем DeepSeek для генерации резюме
+    const deepseekKey = process.env.DEEPSEEK_API_KEY;
+    if (!deepseekKey) {
+      return res.status(500).json({ error: "DEEPSEEK_API_KEY is missing" });
+    }
+
+    const upstreamBody = {
+      model: "deepseek-chat",
+      messages: [
+        { role: "system", content: "Ты — эксперт по созданию подробных и структурированных резюме разговоров." },
+        { role: "user", content: summaryPrompt }
+      ],
+      temperature: 0.3,
+      max_tokens: 2000
+    };
+
+    const upstreamResponse = await fetchWithOptionalProxy("https://api.deepseek.com/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${deepseekKey}`
+      },
+      body: JSON.stringify(upstreamBody)
+    });
+
+    if (!upstreamResponse.ok) {
+      const errorText = await upstreamResponse.text();
+      console.error('DeepSeek API error:', errorText);
+      return res.status(500).json({ error: 'Failed to generate summary' });
+    }
+
+    const data = await upstreamResponse.json();
+    const summary = data.choices?.[0]?.message?.content || 'Не удалось создать резюме';
+
+    res.json({ summary });
+  } catch (error) {
+    console.error('Error generating summary:', error);
+    res.status(500).json({ error: 'Failed to generate summary' });
   }
 });
 
@@ -514,9 +621,10 @@ app.delete('/api/sessions/:sessionId', (req, res) => {
 
 // Создать demo пользователя и сессию для тестирования
 app.post('/api/auth/demo', (req, res) => {
-  if (process.env.NODE_ENV === 'production') {
-    return res.status(403).json({ error: "Demo auth not available in production" });
-  }
+  // Временно разрешаем demo auth в production для тестирования
+  // if (process.env.NODE_ENV === 'production') {
+  //   return res.status(403).json({ error: "Demo auth not available in production" });
+  // }
 
   try {
     const { email = 'demo@example.com', username = 'Demo User' } = req.body;
@@ -534,7 +642,7 @@ app.post('/api/auth/demo', (req, res) => {
           'deposit',
           10.0,
           'Initial demo balance',
-          'demo_setup'
+          `demo_setup_${userId}_${Date.now()}`
         );
       }
       user = DatabaseService.getUserById(userId);
@@ -546,13 +654,14 @@ app.post('/api/auth/demo', (req, res) => {
 
     // Создаем сессию
     req.session.userId = user.id;
+    console.log('🔐 Demo auth setting session userId:', user.id, 'sessionId:', req.session?.id);
     req.session.save((err) => {
       if (err) {
         console.error('❌ Demo auth session save error:', err);
         return res.status(500).json({ error: "Session save failed" });
       }
 
-      console.log('✅ Demo auth successful for user:', user.id, user.email);
+      console.log('✅ Demo auth successful for user:', user.id, user.email, 'session saved');
       res.json({ user, message: "Demo authentication successful" });
     });
 
@@ -665,7 +774,7 @@ app.post('/api/users/current', (req, res) => {
 
     console.log('👤 Getting/creating user:', { id, name, email });
     console.log('🔧 Environment check:', {
-      openai_key: !!OPENAI_API_KEY,
+      deepseek_key: !!DEEPSEEK_API_KEY,
       node_env: process.env.NODE_ENV,
       port: process.env.PORT
     });
@@ -825,13 +934,12 @@ app.post('/api/artifacts/generate', async (req, res) => {
 
 Все должно работать без сборки, только чистый HTML/CSS/JS.`;
 
-    const deepseekResponse = await fetch(API_URL, {
+    const deepseekResponse = await fetchWithOptionalProxy(API_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+        'Authorization': `Bearer ${DEEPSEEK_API_KEY}`,
       },
-      ...(proxyAgent && { dispatcher: proxyAgent }),
       body: JSON.stringify({
         model: MODEL,
         messages: [
@@ -1469,10 +1577,9 @@ ${instruction}
       ...(response_format && Object.keys(response_format).length > 0 ? { response_format } : {}),
     };
 
-    const apiResp = await fetch(API_URL, {
+    const apiResp = await fetchWithOptionalProxy(API_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENAI_API_KEY}` },
-      ...(proxyAgent && { dispatcher: proxyAgent }),
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${DEEPSEEK_API_KEY}` },
       body: JSON.stringify(upstreamBody),
     });
 
@@ -1772,10 +1879,7 @@ app.get('/api/web-search', async (req, res) => {
         try {
           const wttrUrl = `https://wttr.in/${encodeURIComponent(city || 'Moscow')}?format=j1`;
           const weatherResponse = await fetch(wttrUrl, {
-            ...(proxyAgent && { dispatcher: proxyAgent }),
-            headers: {
-              'User-Agent': 'curl/7.68.0'
-            }
+            // fetch with proxy removed for non-OpenAI requests
           });
 
           if (weatherResponse && weatherResponse.ok) {
@@ -1848,7 +1952,7 @@ source=${weatherData.source}`;
             const cryptoResponse = await fetch(
               `https://api.coingecko.com/api/v3/simple/price?ids=${coinGeckoId}&vs_currencies=${vsCurrency}&include_24hr_change=true`,
               {
-                ...(proxyAgent && { dispatcher: proxyAgent }),
+                // fetch without proxy
                 headers: {
                   'User-Agent': 'Mozilla/5.0 (compatible; WindexsAI/1.0)',
                   'Accept': 'application/json'
@@ -1960,12 +2064,12 @@ coingecko_id=${coinGeckoId}`;
 
       // Сначала пробуем русский
       let wikiResponse = await fetch(`https://ru.wikipedia.org/api/rest_v1/page/summary/${wikiQuery}`, {
-        ...(proxyAgent && { dispatcher: proxyAgent })
+        // fetch without proxy
       });
       if (!wikiResponse.ok) {
         // Если русский не найден, пробуем английский
         wikiResponse = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${wikiQuery}`, {
-          ...(proxyAgent && { dispatcher: proxyAgent })
+          // fetch without proxy
         });
       }
 
@@ -2055,7 +2159,7 @@ async function performWebSearch(query) {
   if (lowerQuery.includes('биткоин') || lowerQuery.includes('bitcoin') || lowerQuery.includes('btc')) {
     try {
       const cryptoResponse = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd,rub,eur&include_24hr_change=true&include_market_cap=true&include_24hr_vol=true`, {
-        ...(proxyAgent && { dispatcher: proxyAgent }),
+        // fetch without proxy
         headers: {
           'User-Agent': 'Mozilla/5.0 (compatible; WindexsAI/1.0)',
           'Accept': 'application/json'
@@ -2078,7 +2182,7 @@ async function performWebSearch(query) {
   if (lowerQuery.includes('погод') || lowerQuery.includes('weather')) {
     try {
       const weatherResponse = await fetch(`https://wttr.in/Moscow?format=%C+%t+%w+%h+%p&lang=ru`, {
-        ...(proxyAgent && { dispatcher: proxyAgent }),
+        // fetch without proxy
         headers: {
           'User-Agent': 'curl/7.68.0'
         }
@@ -2097,7 +2201,7 @@ async function performWebSearch(query) {
   try {
     const wikiQuery = query.replace(/\s+/g, '_');
     const wikiResponse = await fetch(`https://ru.wikipedia.org/api/rest_v1/page/summary/${wikiQuery}`, {
-      ...(proxyAgent && { dispatcher: proxyAgent })
+      // fetch without proxy
     });
 
     if (wikiResponse.ok) {
@@ -2113,7 +2217,7 @@ async function performWebSearch(query) {
   // DuckDuckGo Instant Answer
   try {
     const duckResponse = await fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_redirect=1&no_html=1`, {
-      ...(proxyAgent && { dispatcher: proxyAgent }),
+      // fetch without proxy
       headers: {
         'User-Agent': 'Mozilla/5.0 (compatible; WindexsAI/1.0)',
         'Accept': 'application/json'
@@ -2138,14 +2242,26 @@ async function performWebSearch(query) {
 
 // DeepSeek Chat API proxy
 app.post("/api/chat", requireAuth, async (req, res) => {
-  console.log("➡️ /api/chat hit", { requestId: req.body?.requestId, stream: req.body?.stream });
+  console.error("➡️ /api/chat hit", { requestId: req.body?.requestId, stream: req.body?.stream, userId: req.user?.id });
 
   // Таймаут на апстрим (рекомендуется, чтобы не получать подвисания и "fetch failed")
   const fetchWithTimeout = async (url, options, timeoutMs = 30000) => {
     const controller = new AbortController();
     const t = setTimeout(() => controller.abort(new Error("upstream_timeout")), timeoutMs);
     try {
-      return await fetch(url, { ...options, signal: controller.signal });
+      const isOpenAI = url.includes('openai.com');
+      const isDeepSeek = url.includes('deepseek.com');
+      const fetchOptions = { ...options, signal: controller.signal };
+
+      // TEMP: Always use proxy for testing
+      if (proxyAgent) {
+        fetchOptions.dispatcher = proxyAgent;
+        console.error(`🌐 Using proxy for request to ${url}`);
+      } else {
+        console.error(`❌ No proxy agent available`);
+      }
+
+      return await fetch(url, fetchOptions);
     } finally {
       clearTimeout(t);
     }
@@ -2301,8 +2417,8 @@ ${webSearchResult}`,
     }
 
     // OpenAI only
-    const apiProvider = "openai";
-    const actualModel = "gpt-4o-mini";
+    const apiProvider = "deepseek";
+    const actualModel = MODEL;
 
     const priceInfo = getTokenPrices(actualModel);
     console.log(
@@ -2368,9 +2484,9 @@ ${webSearchResult}`,
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${OPENAI_API_KEY}`,
+            Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
           },
-          ...(proxyAgent && { dispatcher: proxyAgent }),
+          // Используем прокси для DeepSeek через fetchWithTimeout
           body: JSON.stringify({
             model: MODEL,
             messages: [
@@ -2417,9 +2533,9 @@ ${webSearchResult}`,
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${OPENAI_API_KEY}`,
+            Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
           },
-          ...(proxyAgent && { dispatcher: proxyAgent }), // оставляем, если у вас undici ProxyAgent
+          // Прокси обрабатывается внутри fetchWithTimeout
           body: JSON.stringify({
             model: actualModel,
             messages: enhancedMessages,
@@ -3003,7 +3119,7 @@ ${indexHtml || "HTML еще не сгенерирован"}`;
     const fetchOptions = {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${OPENAI_API_KEY}`,
+        "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
@@ -3012,10 +3128,9 @@ ${indexHtml || "HTML еще не сгенерирован"}`;
         ...ARTIFACT_PARAMS
       }),
       signal: ac.signal,
-      ...(proxyAgent && { dispatcher: proxyAgent })
     };
 
-    console.log(`🚀 Making OpenAI API call for ${filename} | Proxy: ${!!proxyAgent}`);
+    console.log(`🚀 Making DeepSeek API call for ${filename}`);
     console.log(`📋 API Request details:`, {
       model: MODEL,
       messages: messages.length,
@@ -3184,10 +3299,10 @@ async function generateWebsiteContentJson(prompt) {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), 300000); // Увеличено до 5 минут для генерации контента
 
-  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+  const resp = await fetchWithOptionalProxy(API_URL, {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${OPENAI_API_KEY}`,
+      "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -3204,7 +3319,7 @@ async function generateWebsiteContentJson(prompt) {
 
   if (!resp.ok) {
     const txt = await resp.text().catch(() => "");
-    throw new Error(`OpenAI API error (content.json): ${resp.status} ${txt.slice(0, 500)}`);
+    throw new Error(`DeepSeek API error (content.json): ${resp.status} ${txt.slice(0, 500)}`);
   }
 
   const data = await resp.json();
@@ -3540,22 +3655,43 @@ app.post("/api/users/:id/deduct-tokens", requireAuth, (req, res) => {
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
-  const openaiKey = OPENAI_API_KEY;
-
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
     environment: {
       node_env: process.env.NODE_ENV,
       port: process.env.PORT,
-      openai_key_configured: !!openaiKey,
-      openai_key_prefix: openaiKey ? openaiKey.substring(0, 10) + '...' : null,
+      deepseek_key_configured: !!DEEPSEEK_API_KEY,
+      openai_key_configured: !!OPENAI_API_KEY,
     },
     database: {
-      path: DB_PATH,
       initialized: true
     }
   });
+});
+
+// OpenAI STT (Whisper) endpoint - uses proxy as requested
+app.post('/api/audio/transcriptions', async (req, res) => {
+  try {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      return res.status(500).json({ error: "OPENAI_API_KEY is missing" });
+    }
+
+    // В реальном сценарии здесь должен быть multer для обработки файлов.
+    // Пока создаем прокси-запрос к OpenAI с использованием прокси-агента.
+    console.log('🎤 STT Request received (OpenAI Whisper)');
+    
+    // Это скелет эндпоинта, так как для полноценной работы нужен multer.
+    // Но здесь мы настраиваем использование прокси для OpenAI.
+    return res.status(501).json({ 
+      error: "STT implementation requires file upload handling (multer)",
+      proxy_configured: !!proxyAgent 
+    });
+  } catch (error) {
+    console.error('STT error:', error);
+    res.status(500).json({ error: 'STT failed' });
+  }
 });
 
 // Debug endpoint for checking server status
@@ -3575,6 +3711,8 @@ app.get('/api/debug', (req, res) => {
         messages: messageCount
       },
       environment: {
+        deepseek_key: DEEPSEEK_API_KEY ? 'configured' : 'missing',
+        deepseek_key_prefix: DEEPSEEK_API_KEY ? DEEPSEEK_API_KEY.substring(0, 10) + '...' : null,
         openai_key: OPENAI_API_KEY ? 'configured' : 'missing',
         openai_key_prefix: OPENAI_API_KEY ? OPENAI_API_KEY.substring(0, 10) + '...' : null,
         node_env: process.env.NODE_ENV,

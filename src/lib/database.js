@@ -26,8 +26,9 @@ fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 // Инициализация базы данных
 const db = new Database(DB_PATH);
 
-// Включаем foreign keys
+// Включаем foreign keys и WAL режим
 db.pragma('foreign_keys = ON');
+db.pragma('journal_mode = WAL');
 
 // Создание таблиц
 const createTables = () => {
@@ -205,6 +206,10 @@ const deleteSessionStmt = db.prepare(`
   DELETE FROM chat_sessions WHERE id = ?
 `);
 
+const deleteMessageStmt = db.prepare(`
+  DELETE FROM messages WHERE id = ?
+`);
+
 // Артефакты
 const insertArtifactStmt = db.prepare(`
   INSERT INTO artifacts (session_id, type, title, files_json, deps_json, created_at, updated_at)
@@ -374,6 +379,20 @@ export class DatabaseService {
   // Удаление сессии
   static deleteSession(sessionId) {
     deleteSessionStmt.run(sessionId);
+  }
+
+  // Удаление сообщения
+  static deleteMessage(messageId) {
+    try {
+      const result = deleteMessageStmt.run(messageId);
+      if (result.changes === 0) {
+        throw new Error(`Message with id ${messageId} not found`);
+      }
+      return result;
+    } catch (error) {
+      console.error('Error deleting message:', error);
+      throw error;
+    }
   }
 
   // Создание артефакта

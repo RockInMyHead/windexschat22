@@ -10,6 +10,7 @@ import { TokenCostDisplay } from "@/components/TokenCostDisplay";
 import { BtcWidget } from "@/components/BtcWidget";
 import { WebsiteArtifactCard } from "@/components/WebsiteArtifactCard";
 import { WebsiteExecutionProgress } from "@/components/WebsiteExecutionProgress";
+import { ChatSummaryModal } from "@/components/ChatSummaryModal";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import {
   Select,
@@ -63,6 +64,17 @@ const Chat = () => {
     // Загружаем настройку из localStorage
     const saved = localStorage.getItem('windexsai-internet-enabled');
     return saved !== null ? JSON.parse(saved) : true; // По умолчанию включено
+  });
+  
+  // Summary modal state
+  const [showSummaryModal, setShowSummaryModal] = useState(false);
+  const [chatSummary, setChatSummary] = useState("");
+  const [isSummaryLoading, setIsSummaryLoading] = useState(false);
+  
+  // Voice output state
+  const [voiceOutputEnabled, setVoiceOutputEnabled] = useState<boolean>(() => {
+    const saved = localStorage.getItem('windexsai-voice-output-enabled');
+    return saved !== null ? JSON.parse(saved) : false;
   });
 
   // Refs
@@ -225,6 +237,46 @@ const Chat = () => {
     const newValue = !internetEnabled;
     setInternetEnabled(newValue);
     localStorage.setItem('windexsai-internet-enabled', JSON.stringify(newValue));
+  };
+  
+  // Функция для переключения голосового вывода
+  const handleToggleVoice = () => {
+    const newValue = !voiceOutputEnabled;
+    setVoiceOutputEnabled(newValue);
+    localStorage.setItem('windexsai-voice-output-enabled', JSON.stringify(newValue));
+  };
+  
+  // Функция для генерации резюме чата
+  const handleGenerateSummary = async () => {
+    if (!chatSession.sessionId || messages.length === 0) {
+      alert('Нет сообщений для создания резюме');
+      return;
+    }
+    
+    setShowSummaryModal(true);
+    setIsSummaryLoading(true);
+    setChatSummary('');
+    
+    try {
+      console.log('🔍 DEBUG: apiClient =', apiClient);
+      console.log('🔍 DEBUG: apiClient methods:', Object.getOwnPropertyNames(apiClient));
+      console.log('🔍 DEBUG: has generateChatSummary:', typeof apiClient?.generateChatSummary);
+
+      if (!apiClient) {
+        throw new Error('API client is not initialized');
+      }
+      if (typeof apiClient.generateChatSummary !== 'function') {
+        throw new Error('generateChatSummary method is not available');
+      }
+
+      const response = await apiClient.generateChatSummary(chatSession.sessionId);
+      setChatSummary(response.summary);
+    } catch (error) {
+      console.error('Error generating summary:', error);
+      setChatSummary('Ошибка при создании резюме: ' + (error instanceof Error ? error.message : 'Неизвестная ошибка'));
+    } finally {
+      setIsSummaryLoading(false);
+    }
   };
   const initialMessageSentRef = useRef(false);
 
@@ -526,6 +578,9 @@ const Chat = () => {
             onToggleInternet={handleToggleInternet}
             userBalance={balance.balance}
             balanceLoading={balance.isLoading}
+            onGenerateSummary={handleGenerateSummary}
+            voiceEnabled={voiceOutputEnabled}
+            onToggleVoice={handleToggleVoice}
           />
 
           <div className="flex-1 w-full overflow-y-auto overflow-x-hidden min-h-0">
@@ -788,6 +843,14 @@ const Chat = () => {
           </div>
       </SidebarInset>
       </div>
+      
+      <ChatSummaryModal
+        isOpen={showSummaryModal}
+        onClose={() => setShowSummaryModal(false)}
+        summary={chatSummary}
+        isLoading={isSummaryLoading}
+        chatTitle={`Сессия ${chatSession.sessionId}`}
+      />
     </SidebarProvider>
   );
 };

@@ -1,14 +1,18 @@
 import { Button } from "@/components/ui/button";
-import { Plus, Wifi, WifiOff } from "lucide-react";
+import { SidebarTrigger } from "@/components/ui/sidebar";
+import { Plus, Wifi, WifiOff, FileText, Volume2, VolumeX } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 interface ChatHeaderProps {
   onNewChat: () => void;
   internetEnabled: boolean;
   onToggleInternet: () => void;
-  userBalance?: number | null;
+  userBalance: number | null;
   balanceLoading?: boolean;
   usdToRubRate?: number;
+  onGenerateSummary?: () => void;
+  voiceEnabled?: boolean;
+  onToggleVoice?: () => void;
 }
 
 const ChatHeader = ({
@@ -16,7 +20,10 @@ const ChatHeader = ({
   internetEnabled,
   onToggleInternet,
   userBalance,
-  balanceLoading = false
+  balanceLoading = false,
+  onGenerateSummary,
+  voiceEnabled = false,
+  onToggleVoice
 }: ChatHeaderProps) => {
   const navigate = useNavigate();
 
@@ -29,8 +36,12 @@ const ChatHeader = ({
   return (
     <header className="border-b border-border bg-background sticky top-0 z-10">
       <div className="w-full max-w-5xl mx-auto px-2 sm:px-4 py-3 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          {/* Заголовок WindexsAI убран по запросу пользователя */}
+        <div className="flex items-center gap-2 flex-shrink-0 min-w-[2.25rem]">
+          {/* Кнопка меню для мобильных устройств */}
+          <SidebarTrigger className="md:hidden" />
+          <div className="hidden md:block">
+             {/* Заголовок WindexsAI убран по запросу пользователя */}
+          </div>
         </div>
         <div className="flex items-center gap-2">
           {/* Баланс пользователя */}
@@ -42,9 +53,9 @@ const ChatHeader = ({
             title="Перейти в кошелек"
           >
             {balanceLoading ? (
-              <span className="hidden sm:inline">Загрузка...</span>
+              <span className="text-xs sm:text-sm">Загрузка...</span>
             ) : (
-              <span className="hidden sm:inline font-medium text-green-700">
+              <span className="text-xs sm:text-sm font-medium text-green-700 whitespace-nowrap">
                 {formatBalance(userBalance)}
               </span>
             )}
@@ -63,6 +74,36 @@ const ChatHeader = ({
               <WifiOff className="h-4 w-4" />
             )}
           </Button>
+
+          {onToggleVoice && (
+            <Button
+              variant={voiceEnabled ? "default" : "outline"}
+              size="sm"
+              onClick={onToggleVoice}
+              className={`gap-2 ${voiceEnabled ? 'bg-purple-600 hover:bg-purple-700' : ''}`}
+              title={voiceEnabled ? "Озвучка ответов включена" : "Озвучка ответов отключена"}
+            >
+              {voiceEnabled ? (
+                <Volume2 className="h-4 w-4" />
+              ) : (
+                <VolumeX className="h-4 w-4" />
+              )}
+            </Button>
+          )}
+
+          {onGenerateSummary && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onGenerateSummary}
+              className="gap-2"
+              title="Создать резюме чата"
+            >
+              <FileText className="h-4 w-4" />
+              <span className="hidden sm:inline">Резюме</span>
+            </Button>
+          )}
+
           <Button
             variant="outline"
             size="sm"
