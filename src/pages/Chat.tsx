@@ -258,17 +258,6 @@ const Chat = () => {
     setChatSummary('');
     
     try {
-      console.log('🔍 DEBUG: apiClient =', apiClient);
-      console.log('🔍 DEBUG: apiClient methods:', Object.getOwnPropertyNames(apiClient));
-      console.log('🔍 DEBUG: has generateChatSummary:', typeof apiClient?.generateChatSummary);
-
-      if (!apiClient) {
-        throw new Error('API client is not initialized');
-      }
-      if (typeof apiClient.generateChatSummary !== 'function') {
-        throw new Error('generateChatSummary method is not available');
-      }
-
       const response = await apiClient.generateChatSummary(chatSession.sessionId);
       setChatSummary(response.summary);
     } catch (error) {
