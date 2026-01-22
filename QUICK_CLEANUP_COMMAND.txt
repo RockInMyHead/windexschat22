@@ -1,0 +1,61 @@
+═══════════════════════════════════════════════════════════
+  🆘 ЭКСТРЕННАЯ КОМАНДА ОЧИСТКИ СЕРВЕРА
+═══════════════════════════════════════════════════════════
+
+Скопируйте и выполните эту команду на сервере 176.109.111.72:
+
+ssh user1@176.109.111.72 "sudo bash -c '
+  echo \"🧹 Начинаю экстренную очистку...\"; 
+  echo \"\"; 
+  echo \"📊 Текущее использование:\"; 
+  df -h /; 
+  echo \"\"; 
+  echo \"1️⃣ Очистка apt cache...\"; 
+  apt-get clean; 
+  apt-get autoclean; 
+  apt-get autoremove -y; 
+  echo \"2️⃣ Удаление старых логов...\"; 
+  rm -f /var/log/*.log.* /var/log/*.gz /var/log/*/*.log.* /var/log/*/*.gz 2>/dev/null; 
+  journalctl --vacuum-size=50M; 
+  echo \"3️⃣ Очистка tmp...\"; 
+  rm -rf /tmp/* /var/tmp/* 2>/dev/null; 
+  echo \"4️⃣ Очистка npm логов...\"; 
+  find /home/user1 -type f -path \"*/.npm/_logs/*\" -delete 2>/dev/null; 
+  echo \"\"; 
+  echo \"✅ Очистка завершена!\"; 
+  echo \"\"; 
+  echo \"📊 Итоговое использование:\"; 
+  df -h /; 
+  echo \"\"; 
+  echo \"💾 Свободно:\"; 
+  df -h / | awk \"NR==2 {print \\\"  \\\" \\$4 \\\" из \\\" \\$2 \\\" (использовано \\\" \\$5 \\\")\\\"}\"
+'"
+
+═══════════════════════════════════════════════════════════
+
+Или подключитесь к серверу вручную и выполните:
+
+ssh user1@176.109.111.72
+
+Затем на сервере:
+
+sudo bash << 'EOF'
+  echo "🧹 Экстренная очистка..."
+  apt-get clean
+  apt-get autoclean  
+  apt-get autoremove -y
+  rm -f /var/log/*.log.* /var/log/*.gz /var/log/*/*.log.* /var/log/*/*.gz
+  journalctl --vacuum-size=50M
+  rm -rf /tmp/* /var/tmp/*
+  find /home/user1 -type f -path "*/.npm/_logs/*" -delete
+  echo "✅ Готово!"
+  df -h /
+EOF
+
+═══════════════════════════════════════════════════════════
+
+После успешной очистки запустите деплой:
+
+./deploy-to-server.sh
+
+═══════════════════════════════════════════════════════════
