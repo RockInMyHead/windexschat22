@@ -6,7 +6,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import ChatMessage from "@/components/ChatMessage";
 import ChatHeader from "@/components/ChatHeader";
 import { ChatSidebar } from "@/components/ChatSidebar";
-import { TokenCostDisplay } from "@/components/TokenCostDisplay";
+// import { TokenCostDisplay } from "@/components/TokenCostDisplay"; // commented out
 import { BtcWidget } from "@/components/BtcWidget";
 import { WebsiteArtifactCard } from "@/components/WebsiteArtifactCard";
 import { WebsiteExecutionProgress } from "@/components/WebsiteExecutionProgress";
@@ -740,14 +740,14 @@ const Chat = () => {
             </div>
           </div>
 
-          {/* Token cost display */}
-          {lastTokenCost && (
+          {/* Token cost display - commented out by user request */}
+          {/* {lastTokenCost && (
             <div className="px-4 py-2 border-t bg-secondary/20">
               <TokenCostDisplay
                 tokenCost={lastTokenCost}
               />
             </div>
-          )}
+          )} */}
 
           {/* Input area */}
           <div className="w-full border-t border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
