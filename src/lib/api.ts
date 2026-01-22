@@ -344,7 +344,6 @@ export const apiClient = {
   saveMessage: apiClientInstance.saveMessage.bind(apiClientInstance),
   updateSessionTitle: apiClientInstance.updateSessionTitle.bind(apiClientInstance),
   deleteSession: apiClientInstance.deleteSession.bind(apiClientInstance),
-  saveArtifact: apiClientInstance.saveArtifact.bind(apiClientInstance),
   getArtifact: apiClientInstance.getArtifact.bind(apiClientInstance),
   getArtifactsBySession: apiClientInstance.getArtifactsBySession.bind(apiClientInstance),
   editWebsiteArtifact: apiClientInstance.editWebsiteArtifact.bind(apiClientInstance),
