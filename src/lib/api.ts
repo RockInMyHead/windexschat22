@@ -332,4 +332,27 @@ class OpenAITTSClient {
 
 export const ttsClient = new OpenAITTSClient();
 
-export const apiClient = new ApiClient();
+
+// Создаем apiClient как объект с явными методами для лучшей совместимости с bundler
+const apiClientInstance = new ApiClient();
+
+// Создаем прокси-объект, который явно копирует все методы
+export const apiClient = {
+  createSession: apiClientInstance.createSession.bind(apiClientInstance),
+  getAllSessions: apiClientInstance.getAllSessions.bind(apiClientInstance),
+  getMessages: apiClientInstance.getMessages.bind(apiClientInstance),
+  saveMessage: apiClientInstance.saveMessage.bind(apiClientInstance),
+  updateSessionTitle: apiClientInstance.updateSessionTitle.bind(apiClientInstance),
+  deleteSession: apiClientInstance.deleteSession.bind(apiClientInstance),
+  saveArtifact: apiClientInstance.saveArtifact.bind(apiClientInstance),
+  getArtifact: apiClientInstance.getArtifact.bind(apiClientInstance),
+  getArtifactsBySession: apiClientInstance.getArtifactsBySession.bind(apiClientInstance),
+  editWebsiteArtifact: apiClientInstance.editWebsiteArtifact.bind(apiClientInstance),
+  me: apiClientInstance.me.bind(apiClientInstance),
+  logout: apiClientInstance.logout.bind(apiClientInstance),
+  updateBalance: apiClientInstance.updateBalance.bind(apiClientInstance),
+  generateTTS: apiClientInstance.generateTTS.bind(apiClientInstance),
+  generateTTSRu: apiClientInstance.generateTTSRu.bind(apiClientInstance),
+  generateTTSEn: apiClientInstance.generateTTSEn.bind(apiClientInstance),
+  generateChatSummary: apiClientInstance.generateChatSummary.bind(apiClientInstance)
+};
