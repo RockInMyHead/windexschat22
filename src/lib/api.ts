@@ -251,13 +251,6 @@ class ApiClient {
     });
   }
 
-
-  // Удалить сообщение
-  async deleteMessage(messageId: number): Promise<{ success: boolean }> {
-    return this.request(`/messages/${messageId}`, {
-      method: 'DELETE',
-    });
-  }
   // Generate chat summary
   async generateChatSummary(sessionId: number): Promise<{ summary: string }> {
     return this.request(`/sessions/${sessionId}/summary`, {
@@ -335,31 +328,16 @@ class OpenAITTSClient {
       ...options
     });
   }
+  
+  // Generate chat summary
+  async generateChatSummary(sessionId: number): Promise<{ summary: string }> {
+    return this.request(`/sessions/${sessionId}/summary`, {
+      method: 'POST',
+    });
+  }
 }
 
 export const ttsClient = new OpenAITTSClient();
 
-// Создаем apiClient как объект с явными методами для лучшей совместимости с bundler
-const apiClientInstance = new ApiClient();
-
-// Экспортируем только методы, которые существуют в ApiClient
-export const apiClient = {
-  createSession: apiClientInstance.createSession.bind(apiClientInstance),
-  getAllSessions: apiClientInstance.getAllSessions.bind(apiClientInstance),
-  getMessages: apiClientInstance.getMessages.bind(apiClientInstance),
-  saveMessage: apiClientInstance.saveMessage.bind(apiClientInstance),
-  deleteMessage: apiClientInstance.deleteMessage.bind(apiClientInstance),
-  updateSessionTitle: apiClientInstance.updateSessionTitle.bind(apiClientInstance),
-  deleteSession: apiClientInstance.deleteSession.bind(apiClientInstance),
-  healthCheck: apiClientInstance.healthCheck.bind(apiClientInstance),
-  get: apiClientInstance.get.bind(apiClientInstance),
-  post: apiClientInstance.post.bind(apiClientInstance),
-  me: apiClientInstance.me.bind(apiClientInstance),
-  logout: apiClientInstance.logout.bind(apiClientInstance),
-  createArtifact: apiClientInstance.createArtifact.bind(apiClientInstance),
-  getArtifact: apiClientInstance.getArtifact.bind(apiClientInstance),
-  updateArtifact: apiClientInstance.updateArtifact.bind(apiClientInstance),
-  getArtifactsBySession: apiClientInstance.getArtifactsBySession.bind(apiClientInstance),
-  editWebsiteArtifact: apiClientInstance.editWebsiteArtifact.bind(apiClientInstance),
-  generateChatSummary: apiClientInstance.generateChatSummary.bind(apiClientInstance)
-};
+export const apiClient = new ApiClient();
+console.log('🔍 api.ts: apiClient created:', apiClient);
