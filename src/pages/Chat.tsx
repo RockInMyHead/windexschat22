@@ -136,6 +136,22 @@ const Chat = () => {
     }
   }, [chatSend, messages]);
 
+  // Функция удаления сообщения
+  const handleDeleteMessage = useCallback(async (messageId: number) => {
+    try {
+      console.log('🗑️ Deleting message:', messageId);
+      await apiClient.deleteMessage(messageId);
+
+      // Обновляем локальный state, удаляя сообщение
+      setMessages(prevMessages => prevMessages.filter(msg => msg.id !== messageId));
+
+      console.log('✅ Message deleted successfully');
+    } catch (error) {
+      console.error('❌ Failed to delete message:', error);
+      // Можно добавить toast уведомление об ошибке
+    }
+  }, []);
+
   // Автоматическое исчезновение плана после завершения планирования
   useEffect(() => {
     if (planningCompleted && responsePlan.length > 0) {
@@ -619,6 +635,7 @@ const Chat = () => {
                   <ChatMessage
                     message={message}
                     selectedModel={selectedModel}
+                    onDeleteMessage={handleDeleteMessage}
                   />
 
                   {/* Artifact display */}

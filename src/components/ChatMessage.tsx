@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useRef } from "react";
 import { InlineMath, BlockMath } from 'react-katex';
-import { Copy, Volume2, Loader2 } from "lucide-react";
+import { Copy, Volume2, Loader2, Trash2 } from "lucide-react";
 import DataVisualization, { parseVisualizationConfig, VisualizationConfig } from "./DataVisualization";
 import { ttsClient } from "@/lib/api";
 import { renderPlanJsonForDisplay } from "@/lib/renderInternalPlan";
@@ -258,6 +258,7 @@ interface Message {
 interface ChatMessageProps {
   message: Message;
   selectedModel?: string;
+  onDeleteMessage?: (messageId: number) => void;
 }
 
 // Модальное окно для результатов выполнения кода
@@ -1262,7 +1263,7 @@ const TextWithCodeBlocks = ({
   );
 };
 
-const ChatMessage = ({ message, selectedModel }: ChatMessageProps) => {
+const ChatMessage = ({ message, selectedModel, onDeleteMessage }: ChatMessageProps) => {
   const isUser = message.role === "user";
   const [tooltip, setTooltip] = useState<{
     word: string;
@@ -1270,6 +1271,7 @@ const ChatMessage = ({ message, selectedModel }: ChatMessageProps) => {
     position: { x: number; y: number };
   } | null>(null);
   const [isLoadingDescription, setIsLoadingDescription] = useState(false);
+  const [showDeleteButton, setShowDeleteButton] = useState(false);
 
   // TTS state
   const [isGeneratingTTS, setIsGeneratingTTS] = useState(false);
@@ -1448,6 +1450,19 @@ const ChatMessage = ({ message, selectedModel }: ChatMessageProps) => {
     }
   };
 
+  // Функция удаления сообщения
+  const handleDeleteMessage = async () => {
+    if (!message.id || !onDeleteMessage) return;
+
+    if (confirm('Вы уверены, что хотите удалить это сообщение?')) {
+      try {
+        onDeleteMessage(message.id);
+      } catch (error) {
+        console.error('❌ Ошибка при удалении сообщения:', error);
+      }
+    }
+  };
+
 
   // Функция обработки клика на слово
   const handleWordClick = async (word: string, event: React.MouseEvent, context: string) => {
@@ -1555,9 +1570,13 @@ const ChatMessage = ({ message, selectedModel }: ChatMessageProps) => {
   }, [message.content, visualizationConfig]);
 
   return (
-    <div className={`flex items-start gap-4 mb-6 animate-fade-in ${
-      isUser ? "justify-end" : "justify-start"
-    }`}>
+    <div
+      className={`flex items-start gap-4 mb-6 animate-fade-in ${
+        isUser ? "justify-end" : "justify-start"
+      }`}
+      onMouseEnter={() => setShowDeleteButton(true)}
+      onMouseLeave={() => setShowDeleteButton(false)}
+    >
       {!isUser && (
         <div className="flex flex-col items-center gap-2 shrink-0">
           <div className="w-8 h-8 rounded-full bg-primary text-primary-foreground flex items-center justify-center font-semibold">
@@ -1643,12 +1662,33 @@ const ChatMessage = ({ message, selectedModel }: ChatMessageProps) => {
               <Copy className="w-3 h-3" />
               <span className="hidden sm:inline">Копировать</span>
             </button>
+            {onDeleteMessage && message.id && (
+              <button
+                onClick={handleDeleteMessage}
+                className="flex items-center gap-1 px-2 py-1 text-xs text-muted-foreground hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
+                title="Удалить сообщение"
+              >
+                <Trash2 className="w-3 h-3" />
+                <span className="hidden sm:inline">Удалить</span>
+              </button>
+            )}
           </div>
         )}
       </div>
       {isUser && (
-        <div className="w-8 h-8 rounded-full bg-secondary text-secondary-foreground flex items-center justify-center font-semibold shrink-0">
-          Вы
+        <div className="flex flex-col items-center gap-2 shrink-0">
+          <div className="w-8 h-8 rounded-full bg-secondary text-secondary-foreground flex items-center justify-center font-semibold">
+            Вы
+          </div>
+          {showDeleteButton && onDeleteMessage && message.id && (
+            <button
+              onClick={handleDeleteMessage}
+              className="p-1 rounded hover:bg-red-100 hover:text-red-600 transition-colors opacity-60 hover:opacity-100"
+              title="Удалить сообщение"
+            >
+              <Trash2 className="h-4 w-4" />
+            </button>
+          )}
         </div>
       )}
 

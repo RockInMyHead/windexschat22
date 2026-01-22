@@ -251,6 +251,13 @@ class ApiClient {
     });
   }
 
+
+  // Удалить сообщение
+  async deleteMessage(messageId: number): Promise<{ success: boolean }> {
+    return this.request(`/messages/${messageId}`, {
+      method: 'DELETE',
+    });
+  }
   // Generate chat summary
   async generateChatSummary(sessionId: number): Promise<{ summary: string }> {
     return this.request(`/sessions/${sessionId}/summary`, {
@@ -341,6 +348,7 @@ export const apiClient = {
   getAllSessions: apiClientInstance.getAllSessions.bind(apiClientInstance),
   getMessages: apiClientInstance.getMessages.bind(apiClientInstance),
   saveMessage: apiClientInstance.saveMessage.bind(apiClientInstance),
+  deleteMessage: apiClientInstance.deleteMessage.bind(apiClientInstance),
   updateSessionTitle: apiClientInstance.updateSessionTitle.bind(apiClientInstance),
   deleteSession: apiClientInstance.deleteSession.bind(apiClientInstance),
   healthCheck: apiClientInstance.healthCheck.bind(apiClientInstance),

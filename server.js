@@ -587,6 +587,42 @@ app.post("/api/messages", requireAuth, (req, res) => {
   }
 });
 
+// Удалить сообщение
+app.delete("/api/messages/:messageId", requireAuth, (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const messageIdNum = parseInt(messageId);
+
+    if (!Number.isFinite(messageIdNum) || messageIdNum <= 0) {
+      return res.status(400).json({ error: "Invalid messageId" });
+    }
+
+    console.log(`🗑️ DELETE /api/messages/${messageId} | User: ${req.user.id}`);
+
+    // Получаем информацию о сообщении, чтобы проверить права доступа
+    const messageStmt = db.prepare('SELECT session_id FROM messages WHERE id = ?');
+    const message = messageStmt.get(messageIdNum);
+
+    if (!message) {
+      return res.status(404).json({ error: "Message not found" });
+    }
+
+    // Проверяем, что сессия принадлежит пользователю
+    const ok = checkSessionOwnerStmt.get(message.session_id, req.user.id);
+    if (!ok) {
+      return res.status(404).json({ error: "Message not found or access denied" });
+    }
+
+    // Удаляем сообщение
+    DatabaseService.deleteMessage(messageIdNum);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Error deleting message:', error);
+    res.status(500).json({ error: 'Failed to delete message' });
+  }
+});
+
 // Обновить заголовок сессии
 app.patch('/api/sessions/:sessionId', (req, res) => {
   try {

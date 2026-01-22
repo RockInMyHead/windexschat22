@@ -90,6 +90,10 @@ const deleteSessionStmt = db.prepare(`
   DELETE FROM chat_sessions WHERE id = ?
 `);
 
+const deleteMessageStmt = db.prepare(`
+  DELETE FROM messages WHERE id = ?
+`);
+
 // Инициализация таблиц при первом запуске
 createTables();
 
@@ -138,6 +142,11 @@ export class DatabaseService {
   // Удаление сессии
   static deleteSession(sessionId: number): void {
     deleteSessionStmt.run(sessionId);
+  }
+
+  // Удаление сообщения
+  static deleteMessage(messageId: number): void {
+    deleteMessageStmt.run(messageId);
   }
 
   // Закрытие соединения с БД (для cleanup)
