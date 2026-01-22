@@ -225,6 +225,8 @@ app.use(cors({
       "http://www.ai.windexs.ru",
       "https://chat.tartihome.online",
       "http://chat.tartihome.online",
+      "http://95.174.92.221",
+      "https://95.174.92.221",
       "http://127.0.0.1:8081",
       "http://localhost:8081",
       "http://localhost:3000",
