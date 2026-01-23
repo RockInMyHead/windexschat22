@@ -6,11 +6,11 @@ import { useLocation, useNavigate } from "react-router-dom";
 import ChatMessage from "@/components/ChatMessage";
 import ChatHeader from "@/components/ChatHeader";
 import { ChatSidebar } from "@/components/ChatSidebar";
-// import { TokenCostDisplay } from "@/components/TokenCostDisplay"; // commented out
+import { ChatSummaryModal } from "@/components/ChatSummaryModal";
+import { TokenCostDisplay } from "@/components/TokenCostDisplay";
 import { BtcWidget } from "@/components/BtcWidget";
 import { WebsiteArtifactCard } from "@/components/WebsiteArtifactCard";
 import { WebsiteExecutionProgress } from "@/components/WebsiteExecutionProgress";
-import { ChatSummaryModal } from "@/components/ChatSummaryModal";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import {
   Select,
@@ -65,17 +65,6 @@ const Chat = () => {
     const saved = localStorage.getItem('windexsai-internet-enabled');
     return saved !== null ? JSON.parse(saved) : true; // По умолчанию включено
   });
-  
-  // Summary modal state
-  const [showSummaryModal, setShowSummaryModal] = useState(false);
-  const [chatSummary, setChatSummary] = useState("");
-  const [isSummaryLoading, setIsSummaryLoading] = useState(false);
-  
-  // Voice output state
-  const [voiceOutputEnabled, setVoiceOutputEnabled] = useState<boolean>(() => {
-    const saved = localStorage.getItem('windexsai-voice-output-enabled');
-    return saved !== null ? JSON.parse(saved) : false;
-  });
 
   // Refs
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -127,6 +116,32 @@ const Chat = () => {
   // Voice input state
   const [voiceInputEnabled, setVoiceInputEnabled] = useState(true);
 
+  // Состояния для резюме
+  const [isSummaryModalOpen, setIsSummaryModalOpen] = useState(false);
+  const [chatSummary, setChatSummary] = useState("");
+  const [isSummaryLoading, setIsSummaryLoading] = useState(false);
+
+  const handleGenerateSummary = async () => {
+    if (messages.length === 0) {
+      alert("Сначала отправьте хотя бы одно сообщение");
+      return;
+    }
+
+    setIsSummaryModalOpen(true);
+    setIsSummaryLoading(true);
+    setChatSummary("");
+
+    try {
+      const summary = await apiClient.generateSummary(chatSession.sessionId!);
+      setChatSummary(summary);
+    } catch (error) {
+      console.error('Error generating summary:', error);
+      setChatSummary("Не удалось создать резюме. Попробуйте еще раз.");
+    } finally {
+      setIsSummaryLoading(false);
+    }
+  };
+
   // Voice input callbacks - use useCallback to prevent re-initialization
   const handleVoiceTranscript = useCallback((transcript: string) => {
     console.log('🎤 Voice transcript received:', transcript);
@@ -135,22 +150,6 @@ const Chat = () => {
       chatSend.sendMessage(transcript, messages);
     }
   }, [chatSend, messages]);
-
-  // Функция удаления сообщения
-  const handleDeleteMessage = useCallback(async (messageId: number) => {
-    try {
-      console.log('🗑️ Deleting message:', messageId);
-      await apiClient.deleteMessage(messageId);
-
-      // Обновляем локальный state, удаляя сообщение
-      setMessages(prevMessages => prevMessages.filter(msg => msg.id !== messageId));
-
-      console.log('✅ Message deleted successfully');
-    } catch (error) {
-      console.error('❌ Failed to delete message:', error);
-      // Можно добавить toast уведомление об ошибке
-    }
-  }, []);
 
   // Автоматическое исчезновение плана после завершения планирования
   useEffect(() => {
@@ -253,35 +252,6 @@ const Chat = () => {
     const newValue = !internetEnabled;
     setInternetEnabled(newValue);
     localStorage.setItem('windexsai-internet-enabled', JSON.stringify(newValue));
-  };
-  
-  // Функция для переключения голосового вывода
-  const handleToggleVoice = () => {
-    const newValue = !voiceOutputEnabled;
-    setVoiceOutputEnabled(newValue);
-    localStorage.setItem('windexsai-voice-output-enabled', JSON.stringify(newValue));
-  };
-  
-  // Функция для генерации резюме чата
-  const handleGenerateSummary = async () => {
-    if (!chatSession.sessionId || messages.length === 0) {
-      alert('Нет сообщений для создания резюме');
-      return;
-    }
-    
-    setShowSummaryModal(true);
-    setIsSummaryLoading(true);
-    setChatSummary('');
-    
-    try {
-      const response = await apiClient.generateChatSummary(chatSession.sessionId);
-      setChatSummary(response.summary);
-    } catch (error) {
-      console.error('Error generating summary:', error);
-      setChatSummary('Ошибка при создании резюме: ' + (error instanceof Error ? error.message : 'Неизвестная ошибка'));
-    } finally {
-      setIsSummaryLoading(false);
-    }
   };
   const initialMessageSentRef = useRef(false);
 
@@ -554,6 +524,12 @@ const Chat = () => {
     }
   };
 
+  // Функция удаления сообщения
+  const handleMessageDelete = (messageId: number) => {
+    setMessages(prevMessages => prevMessages.filter(msg => msg.id !== messageId));
+    console.log(`📝 Message ${messageId} removed from UI state`);
+  };
+
   // Показываем индикатор загрузки пока проверяется аутентификация
   if (isLoading) {
     return (
@@ -584,8 +560,6 @@ const Chat = () => {
             userBalance={balance.balance}
             balanceLoading={balance.isLoading}
             onGenerateSummary={handleGenerateSummary}
-            voiceEnabled={voiceOutputEnabled}
-            onToggleVoice={handleToggleVoice}
           />
 
           <div className="flex-1 w-full overflow-y-auto overflow-x-hidden min-h-0">
@@ -631,11 +605,11 @@ const Chat = () => {
 
               {/* Сообщения */}
               {messages.map((message, index) => (
-                <div key={index} className="mb-4">
+                <div key={message.id || index} className="mb-4">
                   <ChatMessage
                     message={message}
                     selectedModel={selectedModel}
-                    onDeleteMessage={handleDeleteMessage}
+                    onMessageDelete={handleMessageDelete}
                   />
 
                   {/* Artifact display */}
@@ -740,14 +714,14 @@ const Chat = () => {
             </div>
           </div>
 
-          {/* Token cost display - commented out by user request */}
-          {/* {lastTokenCost && (
+          {/* Token cost display */}
+          {lastTokenCost && (
             <div className="px-4 py-2 border-t bg-secondary/20">
               <TokenCostDisplay
                 tokenCost={lastTokenCost}
               />
             </div>
-          )} */}
+          )}
 
           {/* Input area */}
           <div className="w-full border-t border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -848,15 +822,15 @@ const Chat = () => {
             </div>
           </div>
       </SidebarInset>
-      </div>
       
       <ChatSummaryModal
-        isOpen={showSummaryModal}
-        onClose={() => setShowSummaryModal(false)}
+        isOpen={isSummaryModalOpen}
+        onClose={() => setIsSummaryModalOpen(false)}
         summary={chatSummary}
         isLoading={isSummaryLoading}
-        chatTitle={`Сессия ${chatSession.sessionId}`}
+        chatTitle={messages[0]?.content?.substring(0, 30)}
       />
+      </div>
     </SidebarProvider>
   );
 };
