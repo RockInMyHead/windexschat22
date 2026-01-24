@@ -75,6 +75,7 @@ Violations MUST be logged and fixed immediately.
 
 from vosk import Model, KaldiRecognizer, SetLogLevel
 from agents import AGENTS
+import tts_silero
 
 # Загрузка переменных окружения из .env файла
 load_dotenv()
@@ -819,7 +820,7 @@ class TTSBackend:
         return await self._synthesize_local_tts(text, lang, settings)
 
     async def _synthesize_local_tts(self, text: str, lang: Optional[str] = None, settings: Optional[TTSSettings] = None) -> bytes:
-        """Локальный TTS через Silero"""
+        """Локальный TTS через Silero (прямой вызов без HTTP)"""
         # Если settings не переданы, используем глобальные дефолты
         if settings is None:
             settings = TTSSettings(
@@ -831,7 +832,6 @@ class TTSBackend:
                 timeout=TTS_TIMEOUT,
             )
         
-        # Основной путь через /tts_wav
         try:
             # Выбор модели и голоса на основе языка
             model_to_use = settings.model
@@ -850,42 +850,41 @@ class TTSBackend:
                 elif settings.model == "silero_ru":
                     voice_to_use = settings.voice if settings.voice in ["eugene", "aidar", "xenia", "baya", "kseniya"] else "eugene"
 
-            print(f"[TTS] Using model: {model_to_use}, voice: {voice_to_use}, detected lang: {lang}")
-
-            r = await _tts_http.post("/tts_wav", json={
-                "text": text,
-                "model": model_to_use,
-                "voice": voice_to_use,
-                "speed": settings.speed,
-                "emotion": settings.emotion,
-                "pause_between_sentences": settings.pause,
-            })
-            r.raise_for_status()
-            return r.content
+            print(f"[TTS] Using direct Silero: model={model_to_use}, voice={voice_to_use}, lang={lang}")
+            
+            # Прямой вызов tts_silero без HTTP
+            wav_bytes = await tts_silero.synthesize_wav(
+                text=text,
+                model_name=model_to_use,
+                voice=voice_to_use,
+                speed=settings.speed,
+                emotion=settings.emotion,
+                pause=settings.pause
+            )
+            
+            print(f"[TTS] Synthesized {len(wav_bytes)} bytes directly")
+            return wav_bytes
+            
         except Exception as e:
-            # Fallback на старый /tts + download
-            print(f"[TTS] /tts_wav failed, trying fallback: {e}")
+            print(f"[TTS] Direct synthesis failed: {e}")
+            # Fallback: попробуем через HTTP, если доступен
             try:
-                rr = await _tts_http.post("/tts", json={
-                    "text": text,
-                    "model": settings.model,
-                    "voice": settings.voice,
-                    "speed": settings.speed,
-                    "emotion": settings.emotion,
-                    "pause_between_sentences": settings.pause,
-                })
-                rr.raise_for_status()
-                data = rr.json()
-                file_id = data.get("file_id") or data.get("audio_url", "").split("/")[-1].replace(".wav", "")
-
-                if file_id:
-                    aa = await _tts_http.get(f"/audio/{file_id}.wav")
-                    aa.raise_for_status()
-                    return aa.content
-                else:
-                    raise RuntimeError(f"No file_id in TTS response: {data}")
-            except Exception as fallback_e:
-                raise RuntimeError(f"TTS synthesis failed: {e}, fallback: {fallback_e}")
+                await init_tts_http()
+                if _tts_http is not None:
+                    print(f"[TTS] Trying HTTP fallback...")
+                    r = await _tts_http.post("/tts_wav", json={
+                        "text": text,
+                        "model": model_to_use,
+                        "voice": voice_to_use,
+                        "speed": settings.speed,
+                        "emotion": settings.emotion,
+                        "pause_between_sentences": settings.pause,
+                    }, timeout=5.0)
+                    r.raise_for_status()
+                    return r.content
+            except Exception as http_e:
+                raise RuntimeError(f"TTS synthesis failed (direct: {e}, HTTP: {http_e})")
+            raise RuntimeError(f"TTS synthesis failed: {e}")
 
 
 async def decode_accept(rec: KaldiRecognizer, chunk: bytes) -> bool:
@@ -1638,6 +1637,7 @@ async def handler(ws: WebSocketServerProtocol):
         print(f"[TTS] run_tts STARTED")
         nonlocal tts_epoch, active_output_u, output_active, last_tts_chunk_ms, tts_playing, tts_allowed_u
         nonlocal asr_enabled, asr_warming_up, asr_warmup_deadline, llm_started, current_llm_input, tts_sending
+        nonlocal voice_state  # КРИТИЧНО: без этого изменения voice_state не видны в основном цикле!
         current_u = -1  # Используем -1 вместо 0, чтобы избежать ложных cleanup
         buf = ""
         local_epoch = tts_epoch
@@ -1682,11 +1682,13 @@ async def handler(ws: WebSocketServerProtocol):
 
             # Игнорируем токены старых utterance
             if u_id != current_u:
+                print(f"[TTS] SKIP token from old utterance: u_id={u_id}, current_u={current_u}, tok='{tok[:20] if tok else 'EOF'}'")
                 continue
 
             # Маркер завершения LLM
             if tok == "":
-                print(f"[TTS] Маркер окончания для utterance {current_u}, буфер: '{buf}' (len={len(buf)})")
+                print(f"[TTS] ✅ EOF MARKER received for utterance {current_u}, buf: '{buf}' (len={len(buf)})")
+                print(f"[TTS] Starting cleanup: tts_sending={tts_sending}, voice_state={voice_state}")
                 
                 # Сначала обрабатываем все оставшиеся чанки из буфера
                 while buf.strip():
@@ -1744,15 +1746,38 @@ async def handler(ws: WebSocketServerProtocol):
                     active_output_u = 0
                 
                 print(f"[WS] → JSON tts_end")
-                await safe_send_locked({"type": "tts_end", "utterance_id": current_u})
-
+                
+                # КРИТИЧНО: Сбрасываем флаги ДО отправки tts_end, чтобы избежать гонки условий
+                # Это гарантирует, что к моменту получения tts_end клиентом, состояние уже обновлено
+                tts_playing = False
+                tts_sending = False
+                
                 # State transition: TTS finished
                 if voice_state != VoiceState.ASSISTANT_TTS:
                     proto_violation("tts_end received while not in TTS state")
-                voice_state = VoiceState.USER_SPEAKING
+                
+                # Возвращаемся в IDLE, чтобы начать ждать новую реплику пользователя
+                voice_state = VoiceState.IDLE
+                print(f"[STATE] ASSISTANT_TTS → IDLE (TTS finished for utterance {current_u})")
+                
+                await safe_send_locked({"type": "tts_end", "utterance_id": current_u})
 
-                tts_playing = False
-                tts_sending = False
+                # Сбрасываем распознаватель Vosk, чтобы он не учитывал старый шум/эхо
+                try:
+                    rec.Reset()
+                    print("[ASR] Vosk recognizer reset after TTS")
+                except Exception as e:
+                    print(f"[ASR] Failed to reset Vosk: {e}")
+
+                # СБРОС ТАЙМЕРОВ ТИШИНЫ: крайне важно для продолжения диалога
+                now_after_tts = now_ms()
+                last_voice_ms = now_after_tts
+                last_partial_change_ms = now_after_tts
+                last_tts_chunk_ms = 0  # КРИТИЧНО: сбрасываем таймер TTS, чтобы не блокировать обработку
+                last_partial = ""
+                endpoint_state = "listening"
+                ack_sent_for_turn = False # Разрешаем ACK для следующей фразы
+                print("[ASR] Silence timers, TTS timer, and endpoint state reset after TTS")
 
                 # ASR WARMUP: мягкая реинициализация после TTS
                 asr_enabled = True
@@ -2231,13 +2256,15 @@ async def handler(ws: WebSocketServerProtocol):
                     if time.time() >= asr_warmup_deadline:
                         asr_warming_up = False
                         # Мягкий сброс VAD (только временные счетчики)
-                        vad.soft_reset()  # см. определение ниже
-                        print("[ASR] Warmup completed, ASR fully active")
+                        vad.soft_reset()
+                        print("[ASR] Warmup completed, ASR fully active, processing buffered audio")
+                        # НЕ continue - обрабатываем накопленный буфер сразу
                     else:
                         continue  # Продолжаем собирать буфер
-
-                print(f"[AUDIO] Получен чанк: {len(msg)} bytes, буфер был: {len(audio_buf)}")
-                audio_buf.extend(msg)
+                else:
+                    # Нормальная работа: добавляем новый PCM в буфер
+                    print(f"[AUDIO] Получен чанк: {len(pcm_data)} bytes, буфер: {len(audio_buf)}")
+                    audio_buf.extend(pcm_data)
 
                 # Обрабатываем аудио по фреймам
                 frames_processed = 0
@@ -2258,6 +2285,11 @@ async def handler(ws: WebSocketServerProtocol):
                     if is_voice:
                         last_voice_ms = now_ms()
                         print(f"[VAD] Речь обнаружена в фрейме {frames_processed}")
+                        
+                        # Если мы были в IDLE, переходим в состояние USER_SPEAKING
+                        if voice_state == VoiceState.IDLE:
+                            voice_state = VoiceState.USER_SPEAKING
+                            print("[STATE] IDLE → USER_SPEAKING")
                     else:
                         print(f"[VAD] Тишина в фрейме {frames_processed}")
 
@@ -2329,8 +2361,8 @@ async def handler(ws: WebSocketServerProtocol):
                             await safe_send_locked({"type": "final", **final_json})
 
                             # State transition: user finished speaking, starting LLM
-                            if voice_state == VoiceState.USER_SPEAKING:
-                                voice_state = VoiceState.IDLE
+                            voice_state = VoiceState.IDLE
+                            print("[STATE] USER_SPEAKING → IDLE (final received)")
 
                         # ВАЖНО: Запуск LLM по final из Vosk (rec.Result())
                         await handle_final_text(final_json.get("text"), reason="final_vosk_result")
@@ -2351,6 +2383,11 @@ async def handler(ws: WebSocketServerProtocol):
                         partial = (part_json.get("partial") or "").strip()
 
                         if partial and partial != last_partial:
+                            # Если мы получили текст, а состояние всё еще IDLE - значит пользователь начал говорить
+                            if voice_state == VoiceState.IDLE:
+                                voice_state = VoiceState.USER_SPEAKING
+                                print(f"[STATE] IDLE → USER_SPEAKING (detected by partial: '{partial[:30]}')")
+
                             # Фильтр tail jitter: не сбрасываем стабильность на мелкие изменения хвоста
                             if not is_tail_jitter(partial, last_partial):
                                 last_partial_change_ms = now
