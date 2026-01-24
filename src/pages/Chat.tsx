@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Send, Mic, Square, Paperclip } from "lucide-react";
+import { Send, Mic, Square, Paperclip, Phone } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import ChatMessage from "@/components/ChatMessage";
 import ChatHeader from "@/components/ChatHeader";
@@ -11,6 +11,7 @@ import { TokenCostDisplay } from "@/components/TokenCostDisplay";
 import { BtcWidget } from "@/components/BtcWidget";
 import { WebsiteArtifactCard } from "@/components/WebsiteArtifactCard";
 import { WebsiteExecutionProgress } from "@/components/WebsiteExecutionProgress";
+import { VoiceCall } from "@/components/VoiceCall";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import {
   Select,
@@ -65,10 +66,13 @@ const Chat = () => {
     const saved = localStorage.getItem('windexsai-internet-enabled');
     return saved !== null ? JSON.parse(saved) : true; // По умолчанию включено
   });
+  const [showVoiceCall, setShowVoiceCall] = useState(false);
 
   // Refs
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const voiceLLMResponseRef = useRef<string>('');
+  const voiceUserMessageIdRef = useRef<number | null>(null);
 
   // Используем хуки для разделения ответственности
   const chatSession = useChatSession({ initialMessage: initialChatMessage || location.state?.initialMessage });
@@ -384,6 +388,95 @@ const Chat = () => {
   const isMarketIntent = (text: string) =>
     /\b(курс|цена|котировк|биткоин|bitcoin|btc|график|chart)\b/i.test(text);
 
+  // Обработка голосовых транскрипций от VoiceCall компонента
+  const handleVoiceCallTranscript = useCallback(async (text: string, isFinal: boolean) => {
+    if (isFinal && text.trim()) {
+      console.log('📝 Voice transcript (final):', text);
+      
+      // Отправляем транскрипцию как сообщение от пользователя
+      try {
+        // Добавляем сообщение пользователя в чат
+        const userMessage: Message = {
+          id: Date.now(),
+          chatId: chatSession.sessionId || 0,
+          role: 'user',
+          content: text.trim(),
+          createdAt: new Date().toISOString()
+        };
+        
+        setMessages(prev => [...prev, userMessage]);
+        
+        // Сохраняем ID для связи с ответом
+        voiceUserMessageIdRef.current = userMessage.id;
+        
+        // Сбрасываем накопленный ответ LLM
+        voiceLLMResponseRef.current = '';
+        
+        // Отправляем на сервер (но не ждем полного ответа, т.к. он придет через WebSocket)
+        if (chatSession.sessionId && user) {
+          apiClient.saveMessage(
+            chatSession.sessionId,
+            'user',
+            text.trim()
+          ).catch(error => {
+            console.error('Failed to save voice transcript to DB:', error);
+          });
+        }
+      } catch (error) {
+        console.error('Failed to save voice transcript:', error);
+      }
+    }
+  }, [chatSession.sessionId, user]);
+
+  // Обработка ответов LLM от голосового звонка VoiceCall компонента
+  const handleVoiceCallLLMResponse = useCallback((delta: string, isStart: boolean = false, isEnd: boolean = false) => {
+    if (isStart) {
+      // Начало нового ответа LLM
+      voiceLLMResponseRef.current = '';
+      
+      // Добавляем пустое сообщение ассистента, которое будем обновлять
+      const assistantMessage: Message = {
+        id: Date.now(),
+        chatId: chatSession.sessionId || 0,
+        role: 'assistant',
+        content: '',
+        createdAt: new Date().toISOString()
+      };
+      
+      setMessages(prev => [...prev, assistantMessage]);
+    } else if (isEnd) {
+      // Конец ответа LLM - сохраняем в БД
+      const finalResponse = voiceLLMResponseRef.current;
+      
+      if (finalResponse && chatSession.sessionId && user) {
+        apiClient.saveMessage(
+          chatSession.sessionId,
+          'assistant',
+          finalResponse
+        ).catch(error => {
+          console.error('Failed to save LLM response to DB:', error);
+        });
+      }
+      
+      voiceLLMResponseRef.current = '';
+    } else {
+      // Накапливаем ответ
+      voiceLLMResponseRef.current += delta;
+      
+      // Обновляем последнее сообщение ассистента
+      setMessages(prev => {
+        const lastMessage = prev[prev.length - 1];
+        if (lastMessage && lastMessage.role === 'assistant') {
+          return [
+            ...prev.slice(0, -1),
+            { ...lastMessage, content: voiceLLMResponseRef.current }
+          ];
+        }
+        return prev;
+      });
+    }
+  }, [chatSession.sessionId, user]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const messageText = input.trim();
@@ -560,9 +653,25 @@ const Chat = () => {
             userBalance={balance.balance}
             balanceLoading={balance.isLoading}
             onGenerateSummary={handleGenerateSummary}
+            voiceCallEnabled={showVoiceCall}
+            onToggleVoiceCall={() => setShowVoiceCall(!showVoiceCall)}
           />
 
-          <div className="flex-1 w-full overflow-y-auto overflow-x-hidden min-h-0">
+          <div className="flex-1 w-full overflow-y-auto overflow-x-hidden min-h-0 relative">
+            {/* Voice Call Component - Закреплен вверху чата */}
+            {showVoiceCall && (
+              <div className="sticky top-0 z-20 bg-background/95 backdrop-blur border-b border-border shadow-sm">
+                <div className="w-full max-w-5xl mx-auto px-2 sm:px-4 py-2 sm:py-3">
+                  <VoiceCall
+                    wsUrl="ws://127.0.0.1:2700"
+                    onTranscript={handleVoiceCallTranscript}
+                    onLLMResponse={handleVoiceCallLLMResponse}
+                    autoStart={true}
+                  />
+                </div>
+              </div>
+            )}
+
             <div className="w-full max-w-5xl mx-auto px-2 sm:px-4 py-2 sm:py-4">
               {messages.length === 0 && (
                 <div className="text-center py-12 sm:py-20 animate-fade-in">
@@ -598,6 +707,15 @@ const Chat = () => {
                       className="text-xs"
                     >
                       🌐 Создать сайт
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowVoiceCall(!showVoiceCall)}
+                      className="text-xs gap-2"
+                    >
+                      <Phone className="w-3 h-3" />
+                      🎙️ Голосовой звонок
                     </Button>
                   </div>
                 </div>

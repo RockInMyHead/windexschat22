@@ -126,6 +126,13 @@ class ApiClient {
     return this.request(`/sessions/${sessionId}/messages`);
   }
 
+  // Удалить сообщение
+  async deleteMessage(messageId: number): Promise<{ success: boolean }> {
+    return this.request(`/messages/${messageId}`, {
+      method: 'DELETE',
+    });
+  }
+
   // Сохранить сообщение
   async saveMessage(sessionId: number, role: 'user' | 'assistant', content: string, artifactId?: number | null): Promise<{ messageId: number }> {
     const sid = Number(sessionId);
@@ -251,11 +258,12 @@ class ApiClient {
     });
   }
 
-  // Generate chat summary
-  async generateChatSummary(sessionId: number): Promise<{ summary: string }> {
-    return this.request(`/sessions/${sessionId}/summary`, {
+  // Сгенерировать резюме чата
+  async generateSummary(sessionId: number): Promise<string> {
+    const result = await this.request<{ summary: string }>(`/sessions/${sessionId}/summary`, {
       method: 'POST',
     });
+    return result.summary;
   }
 
 }
@@ -328,16 +336,99 @@ class OpenAITTSClient {
       ...options
     });
   }
-  
-  // Generate chat summary
-  async generateChatSummary(sessionId: number): Promise<{ summary: string }> {
-    return this.request(`/sessions/${sessionId}/summary`, {
-      method: 'POST',
+}
+
+// Локальный TTS клиент
+class LocalTTSClient {
+  private baseUrl = 'http://127.0.0.1:5001';
+
+  async generateTTS(text: string, options: {
+    model?: string;
+    voice?: string;
+    speed?: number;
+  } = {}): Promise<{ audioUrl: string; duration?: number }> {
+    try {
+      const response = await fetch(`${this.baseUrl}/tts`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          text: text,
+          voice: options.voice || 'ru',
+          speed: options.speed || 1.0,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Local TTS API error: ${response.status} ${error}`);
+      }
+
+      const data = await response.json();
+
+      if (data.audio_base64) {
+        // Конвертируем base64 в Blob
+        const audioData = Uint8Array.from(atob(data.audio_base64), c => c.charCodeAt(0));
+        const audioBlob = new Blob([audioData], { type: 'audio/aiff' });
+        const audioUrl = URL.createObjectURL(audioBlob);
+
+        console.log('✅ Локальный TTS: сгенерирована речь, размер:', audioData.length, 'байт');
+
+        return {
+          audioUrl,
+          duration: undefined
+        };
+      } else {
+        throw new Error('Invalid response from local TTS server');
+      }
+    } catch (error) {
+      console.error('❌ Local TTS error:', error);
+      // Fallback to OpenAI TTS if local fails
+      console.log('🔄 Fallback to OpenAI TTS due to local TTS error');
+      throw error;
+    }
+  }
+
+  async generateTTSRu(text: string, options: {
+    model?: string;
+    voice?: string;
+    speed?: number;
+  } = {}): Promise<{ audioUrl: string; duration?: number }> {
+    console.log('🔊 LOCAL TTS generateTTSRu called with:', { text: text.substring(0, 50), options });
+    return this.generateTTS(text, {
+      model: options.model || 'local',
+      voice: 'ru',
+      speed: options.speed || 1.0,
+      ...options
+    });
+  }
+
+  async generateTTSEn(text: string, options: {
+    model?: string;
+    voice?: string;
+    speed?: number;
+  } = {}): Promise<{ audioUrl: string; duration?: number }> {
+    console.log('🔊 LOCAL TTS generateTTSEn called with:', { text: text.substring(0, 50), options });
+    return this.generateTTS(text, {
+      model: options.model || 'local',
+      voice: 'en',
+      speed: options.speed || 1.0,
+      ...options
     });
   }
 }
 
+// Функция выбора TTS клиента
+export function createTTSClient(useLocal: boolean = false) {
+  return useLocal ? new LocalTTSClient() : new OpenAITTSClient();
+}
+
+// По умолчанию используем OpenAI TTS
 export const ttsClient = new OpenAITTSClient();
 
+// Экспортируем клиентов для явного использования
+export const openAITTSClient = new OpenAITTSClient();
+export const localTTSClient = new LocalTTSClient();
+
 export const apiClient = new ApiClient();
-console.log('🔍 api.ts: apiClient created:', apiClient);

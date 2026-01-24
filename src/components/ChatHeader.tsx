@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { SidebarTrigger } from "@/components/ui/sidebar";
-import { Plus, Wifi, WifiOff, FileText, Volume2, VolumeX } from "lucide-react";
+import { Plus, Wifi, WifiOff, FileText, Volume2, VolumeX, Phone } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 interface ChatHeaderProps {
@@ -13,6 +13,8 @@ interface ChatHeaderProps {
   onGenerateSummary?: () => void;
   voiceEnabled?: boolean;
   onToggleVoice?: () => void;
+  voiceCallEnabled?: boolean;
+  onToggleVoiceCall?: () => void;
 }
 
 const ChatHeader = ({
@@ -23,7 +25,9 @@ const ChatHeader = ({
   balanceLoading = false,
   onGenerateSummary,
   voiceEnabled = false,
-  onToggleVoice
+  onToggleVoice,
+  voiceCallEnabled = false,
+  onToggleVoiceCall
 }: ChatHeaderProps) => {
   const navigate = useNavigate();
 
@@ -88,6 +92,19 @@ const ChatHeader = ({
               ) : (
                 <VolumeX className="h-4 w-4" />
               )}
+            </Button>
+          )}
+
+          {onToggleVoiceCall && (
+            <Button
+              variant={voiceCallEnabled ? "default" : "outline"}
+              size="sm"
+              onClick={onToggleVoiceCall}
+              className={`gap-2 ${voiceCallEnabled ? 'bg-green-600 hover:bg-green-700' : ''}`}
+              title={voiceCallEnabled ? "Голосовой звонок активен" : "Начать голосовой звонок"}
+            >
+              <Phone className="h-4 w-4" />
+              <span className="hidden sm:inline text-xs">Звонок</span>
             </Button>
           )}
 

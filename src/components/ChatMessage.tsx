@@ -2,8 +2,9 @@ import React, { useMemo, useState, useRef } from "react";
 import { InlineMath, BlockMath } from 'react-katex';
 import { Copy, Volume2, Loader2, Trash2 } from "lucide-react";
 import DataVisualization, { parseVisualizationConfig, VisualizationConfig } from "./DataVisualization";
-import { ttsClient } from "@/lib/api";
+import { ttsClient, localTTSClient, apiClient } from "@/lib/api";
 import { renderPlanJsonForDisplay } from "@/lib/renderInternalPlan";
+import { DeleteMessageModal } from "./DeleteMessageModal";
 
 // Функция выполнения JavaScript кода в изолированном контексте
 const executeJavaScript = async (code: string): Promise<string> => {
@@ -258,7 +259,7 @@ interface Message {
 interface ChatMessageProps {
   message: Message;
   selectedModel?: string;
-  onDeleteMessage?: (messageId: number) => void;
+  onMessageDelete?: (messageId: number) => void;
 }
 
 // Модальное окно для результатов выполнения кода
@@ -376,7 +377,6 @@ const CodeBlock = ({ code, language }: { code: string; language?: string }) => {
           <button
             className="text-gray-400 hover:text-gray-200 transition-colors flex-shrink-0 ml-2"
             onClick={() => navigator.clipboard.writeText(code)}
-            title="Копировать код"
           >
             <svg className="w-3 h-3 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
@@ -1263,7 +1263,7 @@ const TextWithCodeBlocks = ({
   );
 };
 
-const ChatMessage = ({ message, selectedModel, onDeleteMessage }: ChatMessageProps) => {
+const ChatMessage = ({ message, selectedModel, onMessageDelete }: ChatMessageProps) => {
   const isUser = message.role === "user";
   const [tooltip, setTooltip] = useState<{
     word: string;
@@ -1271,13 +1271,16 @@ const ChatMessage = ({ message, selectedModel, onDeleteMessage }: ChatMessagePro
     position: { x: number; y: number };
   } | null>(null);
   const [isLoadingDescription, setIsLoadingDescription] = useState(false);
-  const [showDeleteButton, setShowDeleteButton] = useState(false);
 
   // TTS state
   const [isGeneratingTTS, setIsGeneratingTTS] = useState(false);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Delete message state
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // Функция для преобразования контента для отображения (заменяет JSON на читаемый текст)
   const renderForUser = useMemo(() => {
@@ -1452,14 +1455,24 @@ const ChatMessage = ({ message, selectedModel, onDeleteMessage }: ChatMessagePro
 
   // Функция удаления сообщения
   const handleDeleteMessage = async () => {
-    if (!message.id || !onDeleteMessage) return;
+    console.log('🗑️ handleDeleteMessage called, message.id:', message.id, 'isDeleting:', isDeleting);
+    if (!message.id || isDeleting) {
+      console.log('⏳ Skipping delete - no message.id or already deleting');
+      return;
+    }
 
-    if (confirm('Вы уверены, что хотите удалить это сообщение?')) {
-      try {
-        onDeleteMessage(message.id);
-      } catch (error) {
-        console.error('❌ Ошибка при удалении сообщения:', error);
-      }
+    setIsDeleting(true);
+    try {
+      console.log('🗑️ Calling apiClient.deleteMessage for message:', message.id);
+      await apiClient.deleteMessage(message.id);
+      console.log(`✅ Message ${message.id} deleted successfully`);
+      onMessageDelete?.(message.id);
+      setShowDeleteModal(false);
+    } catch (error) {
+      console.error('❌ Failed to delete message:', error);
+      alert('Не удалось удалить сообщение. Попробуйте еще раз.');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -1496,12 +1509,27 @@ const ChatMessage = ({ message, selectedModel, onDeleteMessage }: ChatMessagePro
 
     setIsGeneratingTTS(true);
     try {
+      // Используем локальный TTS по умолчанию, OpenAI только с @openai
+      const useLocalTTS = !message.content.includes('@openai');
+      const selectedTTSClient = useLocalTTS ? localTTSClient : ttsClient;
+
+      console.log(`🎵 TTS DEBUG:`, {
+        messageContent: message.content,
+        containsAtOpenAI: message.content.includes('@openai'),
+        useLocalTTS: useLocalTTS,
+        selectedClient: useLocalTTS ? 'localTTSClient' : 'ttsClient (OpenAI)',
+        cleanText: message.content.replace('@openai', '').trim()
+      });
+
+      // Очищаем текст от @openai для генерации речи
+      const cleanText = message.content.replace('@openai', '').trim();
+
       // Определяем язык текста (простая эвристика)
-      const hasCyrillic = /[а-яё]/i.test(message.content);
+      const hasCyrillic = /[а-яё]/i.test(cleanText);
 
       const result = hasCyrillic
-        ? await ttsClient.generateTTSRu(message.content)
-        : await ttsClient.generateTTSEn(message.content);
+        ? await selectedTTSClient.generateTTSRu(cleanText)
+        : await selectedTTSClient.generateTTSEn(cleanText);
       setAudioUrl(result.audioUrl);
 
       // Создаем аудио элемент и настраиваем обработчики
@@ -1570,13 +1598,9 @@ const ChatMessage = ({ message, selectedModel, onDeleteMessage }: ChatMessagePro
   }, [message.content, visualizationConfig]);
 
   return (
-    <div
-      className={`flex items-start gap-4 mb-6 animate-fade-in ${
-        isUser ? "justify-end" : "justify-start"
-      }`}
-      onMouseEnter={() => setShowDeleteButton(true)}
-      onMouseLeave={() => setShowDeleteButton(false)}
-    >
+    <div className={`flex items-start gap-4 mb-6 animate-fade-in ${
+      isUser ? "justify-end" : "justify-start"
+    }`}>
       {!isUser && (
         <div className="flex flex-col items-center gap-2 shrink-0">
           <div className="w-8 h-8 rounded-full bg-primary text-primary-foreground flex items-center justify-center font-semibold">
@@ -1651,44 +1675,33 @@ const ChatMessage = ({ message, selectedModel, onDeleteMessage }: ChatMessagePro
           )}
         </div>
 
-        {/* Кнопки для сообщений от ассистента */}
-        {!isUser && (
-          <div className="flex items-center gap-1 mt-2 opacity-60 hover:opacity-100 transition-opacity">
+        {/* Кнопки для всех сообщений */}
+        <div className="flex items-center gap-1 mt-2 opacity-60 hover:opacity-100 transition-opacity">
+          {!isUser && (
             <button
               onClick={copyToClipboard}
               className="flex items-center gap-1 px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-secondary rounded-md transition-colors"
-              title="Копировать текст"
             >
               <Copy className="w-3 h-3" />
-              <span className="hidden sm:inline">Копировать</span>
-            </button>
-            {onDeleteMessage && message.id && (
-              <button
-                onClick={handleDeleteMessage}
-                className="flex items-center gap-1 px-2 py-1 text-xs text-muted-foreground hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
-                title="Удалить сообщение"
-              >
-                <Trash2 className="w-3 h-3" />
-                <span className="hidden sm:inline">Удалить</span>
-              </button>
-            )}
-          </div>
-        )}
-      </div>
-      {isUser && (
-        <div className="flex flex-col items-center gap-2 shrink-0">
-          <div className="w-8 h-8 rounded-full bg-secondary text-secondary-foreground flex items-center justify-center font-semibold">
-            Вы
-          </div>
-          {showDeleteButton && onDeleteMessage && message.id && (
-            <button
-              onClick={handleDeleteMessage}
-              className="p-1 rounded hover:bg-red-100 hover:text-red-600 transition-colors opacity-60 hover:opacity-100"
-              title="Удалить сообщение"
-            >
-              <Trash2 className="h-4 w-4" />
             </button>
           )}
+          <button
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              console.log('🗑️ Delete button clicked, opening modal');
+              setShowDeleteModal(true);
+            }}
+            className="flex items-center gap-1 px-2 py-1 text-xs text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-md transition-colors"
+            title="Удалить сообщение"
+          >
+            <Trash2 className="w-3 h-3" />
+          </button>
+        </div>
+      </div>
+      {isUser && (
+        <div className="w-8 h-8 rounded-full bg-secondary text-secondary-foreground flex items-center justify-center font-semibold shrink-0">
+          Вы
         </div>
       )}
 
@@ -1701,6 +1714,14 @@ const ChatMessage = ({ message, selectedModel, onDeleteMessage }: ChatMessagePro
           onClose={() => setTooltip(null)}
         />
       )}
+
+      {/* Модальное окно подтверждения удаления */}
+      <DeleteMessageModal
+        isOpen={showDeleteModal}
+        onClose={() => setShowDeleteModal(false)}
+        onConfirm={handleDeleteMessage}
+        isLoading={isDeleting}
+      />
     </div>
   );
 };
