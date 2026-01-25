@@ -2842,7 +2842,17 @@ ${planDescription}
         const response = await fetch(`${API_BASE_URL}/chat`, requestOptions);
 
         if (!response.ok) {
-          throw new Error(`Chat API error: ${response.status} ${response.statusText}`);
+          const error: any = new Error(`Chat API error: ${response.status} ${response.statusText}`);
+          error.status = response.status;
+          error.statusText = response.statusText;
+          // Пытаемся получить детали ошибки из ответа
+          try {
+            const errorData = await response.clone().json();
+            error.details = errorData;
+          } catch {
+            // Игнорируем ошибку парсинга JSON
+          }
+          throw error;
         }
 
         if (useStreaming) {
@@ -3063,7 +3073,17 @@ ${planDescription}
         console.log('Fetch response status:', response.status, response.statusText);
 
         if (!response.ok) {
-          throw new Error(`Chat API error: ${response.status} ${response.statusText}`);
+          const error: any = new Error(`Chat API error: ${response.status} ${response.statusText}`);
+          error.status = response.status;
+          error.statusText = response.statusText;
+          // Пытаемся получить детали ошибки из ответа
+          try {
+            const errorData = await response.clone().json();
+            error.details = errorData;
+          } catch {
+            // Игнорируем ошибку парсинга JSON
+          }
+          throw error;
         }
 
         if (useStreaming) {

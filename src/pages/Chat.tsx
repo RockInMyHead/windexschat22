@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Send, Mic, Square, Paperclip, Phone } from "lucide-react";
+import { Send, Mic, Square, Paperclip, Phone, Loader2, X } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import ChatMessage from "@/components/ChatMessage";
 import ChatHeader from "@/components/ChatHeader";
@@ -73,6 +73,7 @@ const Chat = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const voiceLLMResponseRef = useRef<string>('');
   const voiceUserMessageIdRef = useRef<number | null>(null);
+  const isInitializingRef = useRef(false);
 
   // Используем хуки для разделения ответственности
   const chatSession = useChatSession({ initialMessage: initialChatMessage || location.state?.initialMessage });
@@ -217,6 +218,11 @@ const Chat = () => {
       console.log('🎤 Aborted error ignored');
       return; // Игнорируем штатные aborted
     }
+    if (error === "start-timeout") {
+      console.log('🎤 Start timeout - возможно, микрофон уже работает');
+      // Не показываем alert для timeout, так как onaudiostart мог уже сработать
+      return;
+    }
     if (error === "not-allowed") {
       alert("Нужно разрешить доступ к микрофону в настройках браузера");
     } else if (error === "no-speech") {
@@ -310,47 +316,59 @@ const Chat = () => {
     console.log('🔄 Initializing session, user authenticated:', !!user);
 
     const initializeSession = async () => {
-      // Проверяем аутентификацию пользователя
-      if (!user) {
-        console.log('User not authenticated, showing auth modal...');
-        setShowAuthModal(true);
-        return;
-      }
+      // Проверяем, не идет ли уже инициализация
+      if (isInitializingRef.current) return;
+      isInitializingRef.current = true;
 
-      // Проверяем, есть ли initialMessage
-      const initialMessage = initialChatMessage || location.state?.initialMessage;
+      try {
+        // Проверяем аутентификацию пользователя
+        if (!user) {
+          console.log('User not authenticated, showing auth modal...');
+          setShowAuthModal(true);
+          return;
+        }
 
-      // Проверяем, не была ли уже обработана эта initialMessage
-      const hasProcessedInitialMessage = sessionStorage.getItem('processedInitialMessage') === (initialMessage || 'none');
+        // Проверяем, есть ли initialMessage
+        const initialMessage = initialChatMessage || location.state?.initialMessage;
 
-      if (!chatSession.sessionId || (initialMessage && !hasProcessedInitialMessage)) {
-        try {
-          // Если есть initialMessage, всегда создаем новый чат
-          if (initialMessage) {
-            console.log('Creating new session for initial message...');
-            // Создаем новую сессию с заголовком на основе первого сообщения
-            const title = initialMessage.length > 50 ? initialMessage.substring(0, 47) + "..." : initialMessage;
-            await chatSession.createSession(title);
+        // Проверяем, не была ли уже обработана эта initialMessage
+        const hasProcessedInitialMessage = sessionStorage.getItem('processedInitialMessage') === (initialMessage || 'none');
 
-            // Отправляем initialMessage как первое сообщение
-            setTimeout(async () => {
-              await chatSend.sendMessage(initialMessage, messages);
-              // Очищаем initialMessage после использования
-              setInitialChatMessage(null);
-              // Помечаем сообщение как обработанное
-              sessionStorage.setItem('processedInitialMessage', initialMessage);
-              // Также очищаем location.state если он был использован
-              if (window.history.replaceState) {
-                window.history.replaceState({}, document.title, window.location.pathname);
+        if (!chatSession.sessionId || (initialMessage && !hasProcessedInitialMessage)) {
+          try {
+            // Если есть initialMessage, всегда создаем новый чат
+            if (initialMessage && !hasProcessedInitialMessage) {
+              console.log('Creating new session for initial message...');
+              // Создаем новую сессию с заголовком на основе первого сообщения
+              const title = initialMessage.length > 50 ? initialMessage.substring(0, 47) + "..." : initialMessage;
+              const result = await chatSession.createSession(title);
+
+              // Отправляем initialMessage как первое сообщение
+              if (result?.sessionId) {
+                setTimeout(async () => {
+                  await chatSend.sendMessage(initialMessage, messages);
+                  // Очищаем initialMessage после использования
+                  setInitialChatMessage(null);
+                  // Помечаем сообщение как обработанное
+                  sessionStorage.setItem('processedInitialMessage', initialMessage);
+                  // Также очищаем location.state если он был использован
+                  if (window.history.replaceState) {
+                    window.history.replaceState({}, document.title, window.location.pathname);
+                  }
+                }, 100);
               }
-            }, 100);
-          } else if (!chatSession.sessionId) {
-            console.log('Creating new empty session...');
-            // Создаем новую пустую сессию
-            await chatSession.createSession("Новый чат");
-          } else {
-            // Загружаем существующие сообщения
-            console.log('Loading existing session messages...');
+            } else if (!chatSession.sessionId) {
+              console.log('Creating new empty session...');
+              // Создаем новую пустую сессию
+              await chatSession.createSession("Новый чат");
+            }
+          } catch (error) {
+            console.error('Error in session creation:', error);
+          }
+        } else {
+          // Загружаем существующие сообщения
+          console.log('Loading existing session messages for session:', chatSession.sessionId);
+          try {
             const savedMessages = await apiClient.getMessages(chatSession.sessionId);
             setMessages(savedMessages);
 
@@ -362,10 +380,12 @@ const Chat = () => {
             if (artifactIds.length > 0) {
               await artifacts.loadArtifacts(artifactIds);
             }
+          } catch (error) {
+            console.error('Error loading existing messages:', error);
           }
-        } catch (error) {
-          console.error('Error initializing session:', error);
         }
+      } finally {
+        isInitializingRef.current = false;
       }
     };
 
@@ -623,6 +643,14 @@ const Chat = () => {
     console.log(`📝 Message ${messageId} removed from UI state`);
   };
 
+  // Функция редактирования сообщения
+  const handleMessageEdit = (messageId: number, updatedMessage: Message) => {
+    setMessages(prevMessages =>
+      prevMessages.map(msg => msg.id === messageId ? updatedMessage : msg)
+    );
+    console.log(`✏️ Message ${messageId} updated in UI state`);
+  };
+
   // Показываем индикатор загрузки пока проверяется аутентификация
   if (isLoading) {
     return (
@@ -728,6 +756,7 @@ const Chat = () => {
                     message={message}
                     selectedModel={selectedModel}
                     onMessageDelete={handleMessageDelete}
+                    onMessageEdit={handleMessageEdit}
                   />
 
                   {/* Artifact display */}
@@ -851,7 +880,7 @@ const Chat = () => {
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     placeholder="Введите сообщение..."
-                    className="min-h-[44px] max-h-32 resize-none pr-12"
+                    className="h-10 sm:h-[52px] min-h-0 max-h-32 resize-none pr-12"
                     disabled={chatSend.isLoading || chatSend.isSending || isProcessingFile}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' && !e.shiftKey) {
@@ -877,44 +906,59 @@ const Chat = () => {
 
                 <Button
                   type="button"
-                  onClick={input.trim() ? (e) => {
-                    console.log('🎤 Click: sending message');
+                  onClick={(e) => {
                     e.preventDefault();
-                    handleSubmit(e as any);
-                  } : (e) => {
-                    console.log('🎤 Click on voice button, input empty:', !input.trim(), 'supported:', isSpeechRecognitionSupported);
-                    e.preventDefault();
-                    if (!isSpeechRecognitionSupported) {
-                      alert('Голосовой ввод не поддерживается в этом браузере');
-                      return;
-                    }
-                    if (voiceInput.isRecording) {
-                      voiceInput.stopRecording();
+                    if (chatSend.isLoading) {
+                      console.log('🛑 Aborting request...');
+                      chatSend.abortCurrentRequest();
+                    } else if (input.trim()) {
+                      console.log('🎤 Click: sending message');
+                      handleSubmit(e as any);
                     } else {
-                      setVoiceInputEnabled(false);
-                      const started = voiceInput.startRecording();
-                      if (!started) {
-                        setVoiceInputEnabled(true);
+                      console.log('🎤 Click on voice button, input empty, supported:', isSpeechRecognitionSupported);
+                      if (!isSpeechRecognitionSupported) {
+                        alert('Голосовой ввод не поддерживается в этом браузере');
                         return;
                       }
-                      // Auto-stop after 5 seconds for safety
-                      setTimeout(() => {
+                      if (voiceInput.isRecording) {
                         voiceInput.stopRecording();
-                        setVoiceInputEnabled(true);
-                      }, 5000);
+                      } else {
+                        setVoiceInputEnabled(false);
+                        voiceInput.startRecording().then((started) => {
+                          if (!started) {
+                            setVoiceInputEnabled(true);
+                            return;
+                          }
+                          // Auto-stop after 5 seconds for safety
+                          setTimeout(() => {
+                            voiceInput.stopRecording();
+                            setVoiceInputEnabled(true);
+                          }, 5000);
+                        }).catch((error) => {
+                          console.error('🎤 Failed to start recording:', error);
+                          setVoiceInputEnabled(true);
+                        });
+                      }
                     }
                   }}
-                  disabled={chatSend.isLoading || isProcessingFile || (!input.trim() && (!isSpeechRecognitionSupported || !voiceInputEnabled))}
+                  disabled={(isProcessingFile || (!input.trim() && (!isSpeechRecognitionSupported || !voiceInputEnabled))) && !chatSend.isLoading}
                   className={`h-10 w-10 sm:h-[52px] sm:w-[52px] shrink-0 ${
+                    chatSend.isLoading ? "bg-destructive hover:bg-destructive/90" :
                     input.trim() ? "" : voiceInput.isRecording ? "bg-red-500 hover:bg-red-600 animate-pulse" : (!voiceInput.isSupported ? "opacity-50" : "")
                   }`}
                   title={
+                    chatSend.isLoading ? "Остановить генерацию" :
                     !isSpeechRecognitionSupported && !input.trim() ? "Голосовой ввод не поддерживается" :
                     input.trim() ? "Отправить сообщение" :
                     voiceInput.isRecording ? "Нажмите для остановки записи" : "Нажмите для голосового ввода"
                   }
                 >
-                  {input.trim() ? (
+                  {chatSend.isLoading ? (
+                    <div className="relative flex items-center justify-center">
+                      <Loader2 className="h-4 w-4 sm:h-5 sm:w-5 animate-spin" />
+                      <X className="h-2 w-2 sm:h-3 sm:w-3 absolute" />
+                    </div>
+                  ) : input.trim() ? (
                     <Send className="h-4 w-4 sm:h-5 sm:w-5" />
                   ) : voiceInput.isRecording ? (
                     <Square className="h-4 w-4 sm:h-5 sm:w-5 text-white" />

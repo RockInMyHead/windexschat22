@@ -79,7 +79,7 @@ interface UseVoiceInputReturn {
   isRecording: boolean;
   isSupported: boolean;
   isIOS: boolean;
-  startRecording: () => boolean;
+  startRecording: () => Promise<boolean>;
   stopRecording: () => void;
   toggleRecording: () => void;
 }
@@ -90,6 +90,7 @@ export const useVoiceInput = ({
   onError,
 }: UseVoiceInputOptions = {}): UseVoiceInputReturn => {
   const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const lastTranscriptRef = useRef<string>("");
 
   const [isSupported, setIsSupported] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -144,12 +145,13 @@ export const useVoiceInput = ({
     }
 
     const rec: SpeechRecognition = new Ctor();
-    rec.continuous = false;
-    rec.interimResults = false;
+    rec.continuous = true; // Изменяем на true для лучшего захвата
+    rec.interimResults = true; // Включаем промежуточные результаты
     rec.lang = lang;
 
     rec.onstart = () => {
       console.log("🎤 Speech recognition started successfully");
+      lastTranscriptRef.current = ""; // Сброс при старте
       clearStartTimeout();
       isStartingRef.current = false;
       stopRequestedRef.current = false;
@@ -157,21 +159,38 @@ export const useVoiceInput = ({
     };
 
     rec.onend = () => {
-      console.log("🎤 Speech recognition ended");
+      console.log("🎤 Speech recognition ended", { lastTranscript: lastTranscriptRef.current });
+      // Если остался не отправленный текст (например, при ручной остановке)
+      if (lastTranscriptRef.current.trim() && stopRequestedRef.current) {
+        console.log("🎤 Sending remaining transcript on manual stop:", lastTranscriptRef.current.trim());
+        onTranscriptRef.current?.(lastTranscriptRef.current.trim());
+      }
       hardResetFlags();
     };
 
     rec.onresult = (event: SpeechRecognitionEvent) => {
-      const transcript = event?.results?.[0]?.[0]?.transcript ?? "";
-      const text = transcript.trim();
-      console.log("🎤 Speech recognition result:", { transcript, text });
-      if (text) onTranscriptRef.current?.(text);
+      let interimTranscript = "";
+      let finalTranscript = "";
 
-      // на большинстве браузеров это ок; если не нужно — уберите
-      try {
-        rec.stop();
-      } catch {
-        /* no-op */
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          finalTranscript += transcript;
+        } else {
+          interimTranscript += transcript;
+        }
+      }
+
+      const currentText = (finalTranscript || interimTranscript).trim();
+      if (currentText) {
+        lastTranscriptRef.current = currentText;
+        console.log("🎤 Speech recognition update:", { final: finalTranscript, interim: interimTranscript });
+      }
+
+      if (finalTranscript.trim()) {
+        console.log("🎤 Speech recognition result (final):", finalTranscript.trim());
+        onTranscriptRef.current?.(finalTranscript.trim());
+        lastTranscriptRef.current = ""; // Сбрасываем, так как уже отправили финальный
       }
     };
 
@@ -219,6 +238,7 @@ export const useVoiceInput = ({
         rec.onend = null as any;
         rec.onresult = null as any;
         rec.onerror = null as any;
+        rec.onaudiostart = null as any;
 
         // abort достаточно; stop часто даёт лишние aborted
         rec.abort();
@@ -230,7 +250,7 @@ export const useVoiceInput = ({
     };
   }, [createRecognition]);
 
-  const startRecording = useCallback((): boolean => {
+  const startRecording = useCallback(async (): Promise<boolean> => {
     const rec = recognitionRef.current;
     console.log("🎤 startRecording called, rec exists:", !!rec, "isStarting:", isStartingRef.current, "isRecording:", isRecording);
 
@@ -245,11 +265,24 @@ export const useVoiceInput = ({
       return false;
     }
 
+    // Запрашиваем разрешение на микрофон перед запуском
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Сразу останавливаем поток, нам нужно только разрешение
+      stream.getTracks().forEach(track => track.stop());
+      console.log("🎤 Microphone permission granted");
+    } catch (err: any) {
+      console.error("🎤 Microphone permission denied:", err);
+      onErrorRef.current?.("not-allowed", "Разрешение на использование микрофона не предоставлено");
+      return false;
+    }
+
     try {
       isStartingRef.current = true;
       stopRequestedRef.current = false;
 
       clearStartTimeout();
+      // Увеличиваем таймаут до 3 секунд для медленных устройств
       startTimeoutRef.current = window.setTimeout(() => {
         if (isStartingRef.current && !isRecording) {
           console.warn("🎤 start timeout -> abort + reset");
@@ -261,7 +294,7 @@ export const useVoiceInput = ({
           hardResetFlags();
           onErrorRef.current?.("start-timeout", "onstart не сработал, старт завис");
         }
-      }, 1200);
+      }, 3000);
 
       console.log("🎤 Calling rec.start()");
       rec.start();
@@ -293,9 +326,9 @@ export const useVoiceInput = ({
     }
   }, []);
 
-  const toggleRecording = useCallback(() => {
+  const toggleRecording = useCallback(async () => {
     if (isRecording) stopRecording();
-    else startRecording();
+    else await startRecording();
   }, [isRecording, startRecording, stopRecording]);
 
   return {

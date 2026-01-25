@@ -133,6 +133,23 @@ class ApiClient {
     });
   }
 
+  // Обновить сообщение
+  async updateMessage(messageId: number, content: string): Promise<{ success: boolean; message: Message }> {
+    try {
+      console.log(`✏️ API: updateMessage called`, { messageId, contentLength: content.length });
+      const result = await this.request<{ success: boolean; message: Message }>(`/messages/${messageId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content }),
+      });
+      console.log(`✏️ API: updateMessage response`, result);
+      return result;
+    } catch (error) {
+      console.error(`❌ API: updateMessage failed`, error);
+      throw error;
+    }
+  }
+
   // Сохранить сообщение
   async saveMessage(sessionId: number, role: 'user' | 'assistant', content: string, artifactId?: number | null): Promise<{ messageId: number }> {
     const sid = Number(sessionId);
@@ -340,7 +357,8 @@ class OpenAITTSClient {
 
 // Локальный TTS клиент
 class LocalTTSClient {
-  private baseUrl = 'http://127.0.0.1:5001';
+  // Используем прокси через Vite в development, прямой URL в production
+  private baseUrl = import.meta.env.DEV ? '' : 'http://localhost:5001';
 
   async generateTTS(text: string, options: {
     model?: string;

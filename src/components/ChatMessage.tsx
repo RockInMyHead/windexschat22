@@ -1,10 +1,11 @@
 import React, { useMemo, useState, useRef } from "react";
 import { InlineMath, BlockMath } from 'react-katex';
-import { Copy, Volume2, Loader2, Trash2 } from "lucide-react";
+import { Copy, Volume2, Loader2, Trash2, Edit2 } from "lucide-react";
 import DataVisualization, { parseVisualizationConfig, VisualizationConfig } from "./DataVisualization";
 import { ttsClient, localTTSClient, apiClient } from "@/lib/api";
 import { renderPlanJsonForDisplay } from "@/lib/renderInternalPlan";
 import { DeleteMessageModal } from "./DeleteMessageModal";
+import { EditMessageModal } from "./EditMessageModal";
 
 // Функция выполнения JavaScript кода в изолированном контексте
 const executeJavaScript = async (code: string): Promise<string> => {
@@ -260,6 +261,7 @@ interface ChatMessageProps {
   message: Message;
   selectedModel?: string;
   onMessageDelete?: (messageId: number) => void;
+  onMessageEdit?: (messageId: number, updatedMessage: Message) => void;
 }
 
 // Модальное окно для результатов выполнения кода
@@ -941,7 +943,7 @@ const renderInlineMarkdown = (
       ? renderInlineMarkdown(part.content, depth + 1, onWordClick, context)
       : part.content;
       nodes.push(
-        <strong key={`bold-${nodeKey++}`} className="font-bold text-foreground">
+        <strong key={`bold-${nodeKey++}`} className="font-bold text-foreground break-words overflow-wrap-anywhere">
           {boldContent}
         </strong>
       );
@@ -1253,7 +1255,7 @@ const TextWithCodeBlocks = ({
           return <CodeBlock key={index} code={part.content} language={part.language} />;
         } else {
           return (
-            <div key={index} className="prose prose-sm max-w-none">
+            <div key={index} className="prose prose-sm max-w-none break-words overflow-wrap-anywhere">
               {renderMathInReactNodes(parseMarkdown(part.content, onWordClick, context))}
             </div>
           );
@@ -1263,7 +1265,7 @@ const TextWithCodeBlocks = ({
   );
 };
 
-const ChatMessage = ({ message, selectedModel, onMessageDelete }: ChatMessageProps) => {
+const ChatMessage = ({ message, selectedModel, onMessageDelete, onMessageEdit }: ChatMessageProps) => {
   const isUser = message.role === "user";
   const [tooltip, setTooltip] = useState<{
     word: string;
@@ -1281,6 +1283,10 @@ const ChatMessage = ({ message, selectedModel, onMessageDelete }: ChatMessagePro
   // Delete message state
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // Edit message state
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
 
   // Функция для преобразования контента для отображения (заменяет JSON на читаемый текст)
   const renderForUser = useMemo(() => {
@@ -1435,17 +1441,53 @@ const ChatMessage = ({ message, selectedModel, onMessageDelete }: ChatMessagePro
     }
   };
 
+  // Функция очистки markdown форматирования из текста
+  const cleanMarkdown = (text: string): string => {
+    return text
+      // Убираем заголовки markdown (###, ##, #)
+      .replace(/^#{1,6}\s+/gm, '')
+      // Убираем маркеры списков (*, -, +)
+      .replace(/^[\*\-\+]\s+/gm, '')
+      // Убираем нумерованные списки (1., 2., и т.д.)
+      .replace(/^\d+\.\s+/gm, '')
+      // Убираем жирный текст markdown (**текст** или __текст__)
+      .replace(/\*\*([^\*]+)\*\*/g, '$1')
+      .replace(/__([^_]+)__/g, '$1')
+      // Убираем курсив markdown (*текст* или _текст_)
+      .replace(/(?<!\*)\*([^\*]+)\*(?!\*)/g, '$1')
+      .replace(/(?<!_)_([^_]+)_(?!_)/g, '$1')
+      // Убираем код markdown (`код`)
+      .replace(/`([^`]+)`/g, '$1')
+      // Убираем код блоки (```код```)
+      .replace(/```[\s\S]*?```/g, '')
+      // Убираем ссылки markdown [текст](url)
+      .replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1')
+      // Убираем разделители (---, ===)
+      .replace(/^[=\-]{2,}$/gm, '')
+      // Убираем вложенные списки (пробелы + маркеры)
+      .replace(/^\s{2,}[\*\-\+]\s+/gm, '')
+      .replace(/^\s{2,}\d+\.\s+/gm, '')
+      // Убираем лишние пустые строки (более 2 подряд)
+      .replace(/\n{3,}/g, '\n\n')
+      // Убираем пробелы в начале строк
+      .replace(/^\s+/gm, '')
+      .trim();
+  };
+
   // Функция копирования текста сообщения
   const copyToClipboard = async () => {
     try {
-      await navigator.clipboard.writeText(message.content);
+      // Очищаем markdown форматирование перед копированием
+      const cleanText = cleanMarkdown(message.content);
+      await navigator.clipboard.writeText(cleanText);
       // Можно добавить toast уведомление здесь
-      console.log('✅ Текст скопирован в буфер обмена');
+      console.log('✅ Текст скопирован в буфер обмена (без markdown)');
     } catch (error) {
       console.error('❌ Не удалось скопировать текст:', error);
       // Fallback для старых браузеров
+      const cleanText = cleanMarkdown(message.content);
       const textArea = document.createElement('textarea');
-      textArea.value = message.content;
+      textArea.value = cleanText;
       document.body.appendChild(textArea);
       textArea.select();
       document.execCommand('copy');
@@ -1473,6 +1515,78 @@ const ChatMessage = ({ message, selectedModel, onMessageDelete }: ChatMessagePro
       alert('Не удалось удалить сообщение. Попробуйте еще раз.');
     } finally {
       setIsDeleting(false);
+    }
+  };
+
+  // Функция редактирования сообщения
+  const handleEditMessage = async (newContent: string) => {
+    console.log('✏️ ChatMessage: handleEditMessage called', { 
+      messageId: message.id, 
+      message: message,
+      isEditing, 
+      contentLength: newContent.trim().length 
+    });
+    
+    // Проверяем наличие id - если нет, пытаемся найти его в других полях
+    const messageId = message.id;
+    
+    if (!messageId) {
+      console.error('✏️ ChatMessage: No message.id found', { message });
+      alert('Ошибка: ID сообщения не найден. Сообщение не было сохранено в базе данных.');
+      return;
+    }
+    
+    if (isEditing) {
+      console.warn('✏️ ChatMessage: Already editing, skipping');
+      return;
+    }
+    
+    if (!newContent.trim()) {
+      console.warn('✏️ ChatMessage: Empty content, skipping');
+      alert('Текст сообщения не может быть пустым');
+      return;
+    }
+
+    setIsEditing(true);
+    try {
+      console.log('✏️ ChatMessage: Calling apiClient.updateMessage', { 
+        messageId: messageId, 
+        contentPreview: newContent.substring(0, 50) + '...' 
+      });
+      
+      const result = await apiClient.updateMessage(messageId, newContent);
+      
+      console.log('✏️ ChatMessage: API response received', { 
+        success: result.success, 
+        message: result.message 
+      });
+      
+      if (!result.success) {
+        throw new Error('API returned success: false');
+      }
+      
+      if (!result.message) {
+        throw new Error('API did not return message object');
+      }
+      
+      console.log(`✅ ChatMessage: Message ${messageId} updated successfully`);
+      
+      // Обновляем сообщение в родительском компоненте
+      if (onMessageEdit) {
+        console.log('✏️ ChatMessage: Calling onMessageEdit callback');
+        onMessageEdit(messageId, result.message);
+      } else {
+        console.warn('✏️ ChatMessage: onMessageEdit callback not provided');
+      }
+      
+      setShowEditModal(false);
+      console.log('✏️ ChatMessage: Edit modal closed');
+    } catch (error) {
+      console.error('❌ ChatMessage: Failed to update message:', error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      alert(`Не удалось обновить сообщение: ${errorMessage}`);
+    } finally {
+      setIsEditing(false);
     }
   };
 
@@ -1627,7 +1741,7 @@ const ChatMessage = ({ message, selectedModel, onMessageDelete }: ChatMessagePro
         </div>
       )}
       <div className={`flex-1 pt-1 ${isUser ? "max-w-[70%]" : "max-w-[80%]"}`}>
-        <div className={`rounded-lg px-4 py-3 ${
+        <div className={`rounded-lg px-4 py-3 break-words overflow-wrap-anywhere ${
           isUser
             ? "bg-primary text-primary-foreground ml-auto"
             : "bg-secondary text-secondary-foreground"
@@ -1685,6 +1799,20 @@ const ChatMessage = ({ message, selectedModel, onMessageDelete }: ChatMessagePro
               <Copy className="w-3 h-3" />
             </button>
           )}
+          {!isUser && message.id && (
+            <button
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                console.log('✏️ Edit button clicked, opening modal', { messageId: message.id, message });
+                setShowEditModal(true);
+              }}
+              className="flex items-center gap-1 px-2 py-1 text-xs text-muted-foreground hover:text-primary hover:bg-primary/10 rounded-md transition-colors"
+              title="Редактировать сообщение"
+            >
+              <Edit2 className="w-3 h-3" />
+            </button>
+          )}
           <button
             onClick={(e) => {
               e.preventDefault();
@@ -1721,6 +1849,15 @@ const ChatMessage = ({ message, selectedModel, onMessageDelete }: ChatMessagePro
         onClose={() => setShowDeleteModal(false)}
         onConfirm={handleDeleteMessage}
         isLoading={isDeleting}
+      />
+
+      {/* Модальное окно редактирования сообщения */}
+      <EditMessageModal
+        isOpen={showEditModal}
+        onClose={() => setShowEditModal(false)}
+        onConfirm={handleEditMessage}
+        initialContent={message.content}
+        isLoading={isEditing}
       />
     </div>
   );

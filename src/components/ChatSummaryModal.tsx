@@ -33,9 +33,26 @@ export const ChatSummaryModal: React.FC<ChatSummaryModalProps> = ({
   };
 
   const handleCopy = async () => {
-    const success = await safeCopyToClipboard(summary);
-    if (success) {
+    try {
+      await navigator.clipboard.writeText(summary);
       console.log('Резюме скопировано');
+      // Можно добавить toast уведомление здесь
+    } catch (err) {
+      console.error('Ошибка при копировании:', err);
+      // Fallback для старых браузеров
+      const textArea = document.createElement('textarea');
+      textArea.value = summary;
+      textArea.style.position = 'fixed';
+      textArea.style.opacity = '0';
+      document.body.appendChild(textArea);
+      textArea.select();
+      try {
+        document.execCommand('copy');
+        console.log('Резюме скопировано (fallback)');
+      } catch (fallbackErr) {
+        console.error('Ошибка при копировании (fallback):', fallbackErr);
+      }
+      document.body.removeChild(textArea);
     }
   };
 

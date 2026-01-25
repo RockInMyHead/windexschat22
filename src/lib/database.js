@@ -210,6 +210,14 @@ const deleteMessageStmt = db.prepare(`
   DELETE FROM messages WHERE id = ?
 `);
 
+const updateMessageStmt = db.prepare(`
+  UPDATE messages SET content = ? WHERE id = ?
+`);
+
+const getMessageByIdStmt = db.prepare(`
+  SELECT * FROM messages WHERE id = ?
+`);
+
 // Артефакты
 const insertArtifactStmt = db.prepare(`
   INSERT INTO artifacts (session_id, type, title, files_json, deps_json, created_at, updated_at)
@@ -379,6 +387,40 @@ export class DatabaseService {
   // Удаление сессии
   static deleteSession(sessionId) {
     deleteSessionStmt.run(sessionId);
+  }
+
+  // Обновление сообщения
+  static updateMessage(messageId, content) {
+    try {
+      // Проверяем, что сообщение существует
+      const message = getMessageByIdStmt.get(messageId);
+      if (!message) {
+        throw new Error(`Message with id ${messageId} not found`);
+      }
+
+      // Обновляем содержимое сообщения
+      const result = updateMessageStmt.run(content, messageId);
+      
+      if (result.changes === 0) {
+        throw new Error(`Failed to update message with id ${messageId}`);
+      }
+
+      // Получаем обновленное сообщение
+      const updatedMessage = getMessageByIdStmt.get(messageId);
+      
+      return {
+        id: updatedMessage.id,
+        session_id: updatedMessage.session_id,
+        user_id: updatedMessage.user_id,
+        role: updatedMessage.role,
+        content: updatedMessage.content,
+        timestamp: updatedMessage.timestamp,
+        artifact_id: updatedMessage.artifact_id
+      };
+    } catch (error) {
+      console.error('Error updating message:', error);
+      throw error;
+    }
   }
 
   // Удаление сообщения

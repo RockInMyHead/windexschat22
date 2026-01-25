@@ -612,17 +612,25 @@ export const VoiceCall: React.FC<VoiceCallProps> = ({
 
             <div className="flex-1 h-12 bg-secondary/50 rounded-full flex items-center px-4 overflow-hidden">
               <div className="flex-1 overflow-hidden">
-                {partialTranscript ? (
-                  <p className="text-sm text-foreground truncate italic">
-                    {partialTranscript}
-                  </p>
-                ) : (
+                {callState === 'speaking' ? (
                   <div className="flex gap-1 items-center justify-center">
                     <div className="w-1 h-4 bg-primary/50 rounded-full animate-wave" />
                     <div className="w-1 h-6 bg-primary/50 rounded-full animate-wave [animation-delay:0.1s]" />
                     <div className="w-1 h-8 bg-primary/50 rounded-full animate-wave [animation-delay:0.2s]" />
                     <div className="w-1 h-6 bg-primary/50 rounded-full animate-wave [animation-delay:0.3s]" />
                     <div className="w-1 h-4 bg-primary/50 rounded-full animate-wave [animation-delay:0.4s]" />
+                  </div>
+                ) : partialTranscript ? (
+                  <p className="text-sm text-foreground truncate italic">
+                    {partialTranscript}
+                  </p>
+                ) : (
+                  <div className="flex gap-1 items-center justify-center opacity-30">
+                    <div className="w-1 h-4 bg-primary/50 rounded-full" />
+                    <div className="w-1 h-6 bg-primary/50 rounded-full" />
+                    <div className="w-1 h-8 bg-primary/50 rounded-full" />
+                    <div className="w-1 h-6 bg-primary/50 rounded-full" />
+                    <div className="w-1 h-4 bg-primary/50 rounded-full" />
                   </div>
                 )}
               </div>

@@ -43,14 +43,6 @@ export const useChatSession = ({ initialMessage }: UseChatSessionOptions = {}): 
     setIsLoading(false);
   };
 
-  // Инициализация сессии при наличии initialMessage
-  useEffect(() => {
-    if (initialMessage && !sessionId) {
-      const title = initialMessage.length > 50 ? initialMessage.substring(0, 47) + "..." : initialMessage;
-      createSession(title);
-    }
-  }, [initialMessage]);
-
   return {
     sessionId,
     isLoading,

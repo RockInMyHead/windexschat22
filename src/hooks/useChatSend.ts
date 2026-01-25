@@ -789,7 +789,22 @@ export const useChatSend = ({
         finalAssistantText,
       });
       if (finalAssistantText.length > 0) {
-        await apiClient.saveMessage(sid, "assistant", finalAssistantText);
+        const saveResult = await apiClient.saveMessage(sid, "assistant", finalAssistantText);
+        
+        // Обновляем последнее сообщение ассистента, чтобы оно получило ID из БД
+        if (saveResult?.messageId) {
+          onMessageUpdate(prev => {
+            const newMessages = [...prev];
+            // Находим последнее сообщение ассистента и обновляем его ID
+            for (let i = newMessages.length - 1; i >= 0; i--) {
+              if (newMessages[i].role === 'assistant' && !newMessages[i].id) {
+                newMessages[i] = { ...newMessages[i], id: saveResult.messageId };
+                break;
+              }
+            }
+            return newMessages;
+          });
+        }
 
         // ✅ Обновляем баланс после успешного ответа (списание средств на сервере)
         if (onBalanceUpdate) {
@@ -821,9 +836,21 @@ export const useChatSend = ({
       }
 
       // ✅ Специальная обработка нехватки средств (ошибка 402)
-      if (error?.status === 402 || error?.message?.includes('Insufficient funds') || error?.message?.includes('insufficient_funds')) {
-        console.log('💰 Insufficient funds detected, showing balance update message');
-        const balanceMessage = '💰 Недостаточно средств для отправки сообщения. Пожалуйста, пополните баланс в разделе "Кошелёк".';
+      if (error?.status === 402 || 
+          error?.message?.includes('Insufficient funds') || 
+          error?.message?.includes('insufficient_funds') || 
+          error?.message?.includes('402') ||
+          error?.message?.includes('Payment Required')) {
+        console.log('💰 Insufficient funds detected, showing balance update message', { error });
+        
+        // Пытаемся получить информацию о балансе из деталей ошибки
+        let balanceInfo = '';
+        if (error?.details?.balance !== undefined) {
+          balanceInfo = ` Текущий баланс: ${error.details.balance.toFixed(2)} ₽.`;
+        }
+        
+        const balanceMessage = `💰 Недостаточно средств для отправки сообщения.${balanceInfo} Пожалуйста, пополните баланс в разделе "Кошелёк".`;
+        
         onMessageUpdate(prev => [...prev, {
           role: 'assistant',
           content: balanceMessage,

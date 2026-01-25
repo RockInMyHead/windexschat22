@@ -1,4 +1,4 @@
-import { MessageSquare, User, Plus, Trash2 } from "lucide-react";
+import { MessageSquare, User, Plus, Trash2, Edit2, Check, X } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { useAuth } from "@/contexts/AuthContext";
 import {
@@ -14,7 +14,8 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
-import { useState, useEffect } from "react";
+import { Input } from "@/components/ui/input";
+import { useState, useEffect, useRef } from "react";
 import { apiClient, type ChatSession } from "@/lib/api";
 
 interface ChatSidebarProps {
@@ -30,6 +31,9 @@ export function ChatSidebar({ onSelectChat, currentSessionId, refreshTrigger, on
   const collapsed = state === "collapsed";
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [loading, setLoading] = useState(true);
+  const [editingSessionId, setEditingSessionId] = useState<number | null>(null);
+  const [editingTitle, setEditingTitle] = useState<string>("");
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const loadChatSessions = async () => {
@@ -110,6 +114,51 @@ export function ChatSidebar({ onSelectChat, currentSessionId, refreshTrigger, on
     }
   };
 
+  const handleStartEdit = (sessionId: number, currentTitle: string) => {
+    setEditingSessionId(sessionId);
+    setEditingTitle(currentTitle);
+    // Фокусируемся на инпуте после рендера
+    setTimeout(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }, 0);
+  };
+
+  const handleSaveEdit = async (sessionId: number) => {
+    const trimmedTitle = editingTitle.trim();
+    if (!trimmedTitle) {
+      alert('Название не может быть пустым');
+      return;
+    }
+
+    try {
+      await apiClient.updateSessionTitle(sessionId, trimmedTitle);
+      const updatedSessions = await apiClient.getAllSessions();
+      setChatSessions(updatedSessions);
+      setEditingSessionId(null);
+      setEditingTitle("");
+    } catch (error) {
+      console.error('Error updating session title:', error);
+      alert(`Ошибка при обновлении названия: ${error.message || 'Неизвестная ошибка'}`);
+    }
+  };
+
+  const handleCancelEdit = () => {
+    setEditingSessionId(null);
+    setEditingTitle("");
+  };
+
+  // Обработка нажатия Enter и Escape
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>, sessionId: number) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleSaveEdit(sessionId);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      handleCancelEdit();
+    }
+  };
+
   return (
     <Sidebar
       side="left"
@@ -164,37 +213,103 @@ export function ChatSidebar({ onSelectChat, currentSessionId, refreshTrigger, on
                 chatSessions.map((session) => (
                   <SidebarMenuItem key={session.id}>
                     <div className={`relative group ${!collapsed ? 'w-full' : ''}`}>
-                      <SidebarMenuButton
-                        onClick={() => handleChatClick(session.id!)}
-                        className={`hover:bg-muted/50 flex items-center gap-2 w-full ${
-                          currentSessionId === session.id ? 'bg-muted text-primary' : ''
-                        }`}
-                      >
-                        <MessageSquare className="h-4 w-4 shrink-0" />
-                        {!collapsed && (
-                          <div className="flex-1 overflow-hidden">
-                            <p className="text-sm truncate">{session.title}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {formatDate(session.updated_at)}
-                            </p>
-                          </div>
-                        )}
-                      </SidebarMenuButton>
+                      {editingSessionId === session.id ? (
+                        // Режим редактирования
+                        <div className="flex items-center gap-1 px-2 py-1.5 w-full">
+                          <Input
+                            ref={inputRef}
+                            value={editingTitle}
+                            onChange={(e) => setEditingTitle(e.target.value)}
+                            onKeyDown={(e) => handleKeyDown(e, session.id!)}
+                            onClick={(e) => e.stopPropagation()}
+                            className="h-7 text-sm px-2 flex-1"
+                            placeholder="Название чата"
+                          />
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleSaveEdit(session.id!);
+                            }}
+                            className="p-1 rounded-md hover:bg-primary/10 hover:text-primary transition-colors"
+                            title="Сохранить"
+                          >
+                            <Check className="h-3 w-3" />
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleCancelEdit();
+                            }}
+                            className="p-1 rounded-md hover:bg-destructive/10 hover:text-destructive transition-colors"
+                            title="Отмена"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </div>
+                      ) : (
+                        // Обычный режим
+                        <>
+                          <SidebarMenuButton
+                            onDoubleClick={(e) => {
+                              if (!collapsed) {
+                                e.stopPropagation();
+                                handleStartEdit(session.id!, session.title);
+                              }
+                            }}
+                            onClick={() => handleChatClick(session.id!)}
+                            className={`hover:bg-muted/50 flex items-center gap-2 w-full ${
+                              currentSessionId === session.id ? 'bg-muted text-primary' : ''
+                            }`}
+                          >
+                            <MessageSquare className="h-4 w-4 shrink-0" />
+                            {!collapsed && (
+                              <div className="flex-1 overflow-hidden">
+                                <p className="text-sm truncate">{session.title}</p>
+                                <p className="text-xs text-muted-foreground">
+                                  {formatDate(session.updated_at)}
+                                </p>
+                              </div>
+                            )}
+                          </SidebarMenuButton>
 
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteChat(session.id!, session.title);
-                        }}
-                        className={`${
-                          collapsed
-                            ? 'absolute -right-1 top-1/2 -translate-y-1/2 p-1 rounded-md opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive transition-all duration-200'
-                            : 'absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-md opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive transition-all duration-200'
-                        }`}
-                        title="Удалить чат"
-                      >
-                        <Trash2 className={`${collapsed ? 'h-3 w-3' : 'h-3 w-3'}`} />
-                      </button>
+                          {!collapsed && (
+                            <>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleStartEdit(session.id!, session.title);
+                                }}
+                                className="absolute right-8 top-1/2 -translate-y-1/2 p-1 rounded-md opacity-0 group-hover:opacity-100 hover:bg-primary/10 hover:text-primary transition-all duration-200"
+                                title="Переименовать чат"
+                              >
+                                <Edit2 className="h-3 w-3" />
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteChat(session.id!, session.title);
+                                }}
+                                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-md opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive transition-all duration-200"
+                                title="Удалить чат"
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </button>
+                            </>
+                          )}
+                          {collapsed && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteChat(session.id!, session.title);
+                              }}
+                              className="absolute -right-1 top-1/2 -translate-y-1/2 p-1 rounded-md opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive transition-all duration-200"
+                              title="Удалить чат"
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </button>
+                          )}
+                        </>
+                      )}
                     </div>
                   </SidebarMenuItem>
                 ))

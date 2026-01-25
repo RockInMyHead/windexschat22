@@ -509,7 +509,23 @@ app.post('/api/sessions/:sessionId/summary', requireAuth, async (req, res) => {
       `${msg.role === 'user' ? 'Пользователь' : 'Ассистент'}: ${msg.content}`
     ).join('\n\n');
 
-    const summaryPrompt = `Создай подробное и логичное резюме следующего разговора. Включи все основные темы, вопросы и ответы. Резюме должно быть структурированным и понятным:\n\n${conversationText}\n\nРезюме:`;
+    const summaryPrompt = `Проанализируй следующий диалог и напиши резюме ОДНИМ СПЛОШНЫМ ТЕКСТОМ.
+
+КРИТИЧЕСКИ ВАЖНО:
+- Пиши ТОЛЬКО связными предложениями, как обычный рассказ или сочинение
+- ЗАПРЕЩЕНО использовать списки, пункты, нумерацию, маркеры
+- ЗАПРЕЩЕНО использовать любые символы форматирования: *, #, -, +, **, __, цифры с точкой
+- ЗАПРЕЩЕНО использовать заголовки, подзаголовки, разделы
+- ЗАПРЕЩЕНО пересказывать каждое сообщение отдельно
+- Пиши сплошным текстом, разделяя только абзацами (двойной перевод строки)
+
+ФОРМАТ ОТВЕТА:
+Начни сразу с описания тем разговора связными предложениями. Опиши что обсуждалось, какие выводы были сделаны. Все должно быть написано как единый связный текст, без структурирования, без списков, без пунктов.
+
+Диалог:
+${conversationText}
+
+Напиши резюме сплошным текстом, начиная сразу с содержания (без заголовков, без списков, только связные предложения):`;
 
     // Используем DeepSeek для генерации резюме
     const deepseekKey = process.env.DEEPSEEK_API_KEY;
@@ -520,10 +536,10 @@ app.post('/api/sessions/:sessionId/summary', requireAuth, async (req, res) => {
     const upstreamBody = {
       model: "deepseek-chat",
       messages: [
-        { role: "system", content: "Ты — эксперт по созданию подробных и структурированных резюме разговоров." },
+        { role: "system", content: "Ты пишешь резюме разговоров ОДНИМ СПЛОШНЫМ ТЕКСТОМ, как связное повествование. СТРОГО ЗАПРЕЩЕНО: списки, пункты, нумерацию, маркеры, markdown символы (*, #, -, +, **, __), заголовки, подзаголовки, разделы, структурирование. Пиши ТОЛЬКО связными предложениями, разделяя только абзацами. Начинай сразу с содержания, без заголовков." },
         { role: "user", content: summaryPrompt }
       ],
-      temperature: 0.3,
+      temperature: 0.2,
       max_tokens: 2000
     };
 
@@ -543,7 +559,96 @@ app.post('/api/sessions/:sessionId/summary', requireAuth, async (req, res) => {
     }
 
     const data = await upstreamResponse.json();
-    const summary = data.choices?.[0]?.message?.content || 'Не удалось создать резюме';
+    let summary = data.choices?.[0]?.message?.content || 'Не удалось создать резюме';
+
+    // Максимально агрессивная очистка всех структурных элементов
+    summary = summary
+      // Убираем все заголовки markdown (###, ##, #) полностью
+      .replace(/^#{1,6}\s+.*$/gm, '')
+      // Убираем все маркеры списков (*, -, +) в начале строки и вложенные
+      .replace(/^[\*\-\+]\s+/gm, '')
+      .replace(/^\s+[\*\-\+]\s+/gm, '')
+      // Убираем все нумерованные списки (1., 2., и т.д.) включая вложенные
+      .replace(/^\d+\.\s+/gm, '')
+      .replace(/^\s+\d+\.\s+/gm, '')
+      // Убираем разделители (---, ===)
+      .replace(/^[=\-]{2,}$/gm, '')
+      // Убираем все markdown форматирование текста
+      .replace(/\*\*([^\*]+)\*\*/g, '$1')
+      .replace(/__([^_]+)__/g, '$1')
+      .replace(/\*([^\*]+)\*/g, '$1')
+      .replace(/_([^_]+)_/g, '$1')
+      // Убираем строки с только заглавными буквами (заголовки)
+      .replace(/^[А-ЯЁA-Z\s]{5,}$/gm, '')
+      // Убираем строки вида "**Текст:**" или "**Текст**"
+      .replace(/\*\*([^:]+):\*\*/g, '')
+      .replace(/\*\*([^\*]+)\*\*/g, '$1')
+      // Разбиваем на строки и обрабатываем каждую
+      .split('\n')
+      .map(line => {
+        // Убираем все markdown символы в начале строки
+        line = line.replace(/^[\*\#\-\+\d\.\s:]+/, '');
+        // Убираем пробелы в начале и конце
+        line = line.trim();
+        return line;
+      })
+      // Фильтруем пустые строки и строки только с markdown символами
+      .filter(line => {
+        const trimmed = line.trim();
+        // Пропускаем пустые строки
+        if (trimmed.length === 0) return false;
+        // Пропускаем строки, которые состоят только из markdown символов
+        if (/^[\*\#\-\+\d\.\s:]+$/.test(trimmed)) return false;
+        return true;
+      })
+      // Объединяем обратно
+      .join('\n')
+      // Убираем лишние пустые строки (более 1 подряд)
+      .replace(/\n{3,}/g, '\n\n')
+      // Убираем оставшиеся markdown символы в тексте
+      .replace(/\*\*/g, '')
+      .replace(/__/g, '')
+      .replace(/^\*\s*/gm, '')
+      .replace(/^#+\s*/gm, '')
+      .replace(/^-\s*/gm, '')
+      .replace(/^\d+\.\s*/gm, '')
+      .trim();
+
+    // Если после очистки остался очень короткий текст, используем более мягкую очистку
+    if (summary.length < 100) {
+      summary = data.choices?.[0]?.message?.content || 'Не удалось создать резюме';
+      // Мягкая очистка - только убираем markdown символы, но сохраняем структуру
+      summary = summary
+        .replace(/\*\*/g, '')
+        .replace(/__/g, '')
+        .replace(/^#{1,6}\s+/gm, '')
+        .replace(/^[\*\-\+]\s+/gm, '')
+        .replace(/^\d+\.\s+/gm, '')
+        // Преобразуем списки в связный текст
+        .split('\n')
+        .map(line => {
+          line = line.trim();
+          // Если строка начинается с маркера списка, убираем его и добавляем запятую или точку
+          if (/^[\*\-\+]\s+/.test(line)) {
+            line = line.replace(/^[\*\-\+]\s+/, '');
+            if (!line.endsWith('.') && !line.endsWith(',')) {
+              line += '.';
+            }
+          }
+          // Если строка начинается с номера, убираем его
+          if (/^\d+\.\s+/.test(line)) {
+            line = line.replace(/^\d+\.\s+/, '');
+            if (!line.endsWith('.') && !line.endsWith(',')) {
+              line += '.';
+            }
+          }
+          return line;
+        })
+        .filter(line => line.length > 0)
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
 
     res.json({ summary });
   } catch (error) {
@@ -588,6 +693,58 @@ app.post("/api/messages", requireAuth, (req, res) => {
   } catch (e) {
     console.error("❌ Error saving message:", e?.stack || e);
     return res.status(500).json({ error: "Failed to save message" });
+  }
+});
+
+// Обновить сообщение
+app.patch("/api/messages/:messageId", requireAuth, (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const { content } = req.body || {};
+    const messageIdNum = parseInt(messageId);
+
+    if (!Number.isFinite(messageIdNum) || messageIdNum <= 0) {
+      return res.status(400).json({ error: "Invalid messageId" });
+    }
+
+    if (!content || !String(content).trim()) {
+      return res.status(400).json({ error: "Content is required" });
+    }
+
+    console.log(`✏️ PATCH /api/messages/${messageId} | User: ${req.user.id}`);
+
+    // Получаем информацию о сообщении, чтобы проверить права доступа
+    const messageStmt = db.prepare('SELECT session_id FROM messages WHERE id = ?');
+    const message = messageStmt.get(messageIdNum);
+
+    if (!message) {
+      return res.status(404).json({ error: "Message not found" });
+    }
+
+    // Проверяем, что сессия принадлежит пользователю
+    const ok = checkSessionOwnerStmt.get(message.session_id, req.user.id);
+    if (!ok) {
+      return res.status(404).json({ error: "Message not found or access denied" });
+    }
+
+    // Обновляем сообщение
+    const updatedMessage = DatabaseService.updateMessage(messageIdNum, String(content).trim());
+
+    // Преобразуем в формат API
+    const messageResponse = {
+      id: updatedMessage.id,
+      sessionId: updatedMessage.session_id,
+      role: updatedMessage.role,
+      content: updatedMessage.content,
+      timestamp: updatedMessage.timestamp,
+      artifactId: updatedMessage.artifact_id || null,
+    };
+
+    console.log(`✏️ PATCH /api/messages/${messageId} response:`, { success: true, message: messageResponse });
+    res.json({ success: true, message: messageResponse });
+  } catch (e) {
+    console.error("❌ Error updating message:", e?.stack || e);
+    return res.status(500).json({ error: "Failed to update message" });
   }
 });
 

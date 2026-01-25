@@ -89,6 +89,7 @@ export default {
         "fade-in": "fade-in 0.5s ease-out",
         "slide-up": "slide-up 0.5s ease-out",
         "text-shimmer": "text-shimmer 3s ease-in-out infinite",
+        "wave": "wave 1.2s ease-in-out infinite",
       },
       keyframes: {
         "fade-in": {
@@ -102,6 +103,10 @@ export default {
         "text-shimmer": {
           "0%, 100%": { opacity: "1" },
           "50%": { opacity: "0.7" },
+        },
+        "wave": {
+          "0%, 100%": { transform: "scaleY(1)" },
+          "50%": { transform: "scaleY(1.5)" },
         },
       },
     },
