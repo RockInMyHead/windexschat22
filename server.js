@@ -5,6 +5,7 @@ import { ProxyAgent } from 'undici';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import dns from 'node:dns/promises';
+import { spawn } from 'child_process';
 import { DatabaseService } from './src/lib/database.js';
 
 // Функция для генерации превью HTML с инлайновыми ресурсами
@@ -3982,6 +3983,164 @@ app.post('/api/test-market-query', (req, res) => {
     hasPriceQuery,
     isMarketQuery
   });
+});
+
+// Функция для конвертации цифр в слова с правильным склонением
+async function convertNumbersToWords(text) {
+  // Проверяем, есть ли цифры, научная нотация или математические символы в тексте
+  // Поддерживаем: обычные цифры, десятичные числа, научную нотацию (×, ², ³, ⁴, ¹⁰ и т.д.)
+  const hasNumbers = /\d/.test(text) || 
+                    /[×·]/.test(text) || // Знак умножения
+                    /[²³⁴⁵⁶⁷⁸⁹¹⁰]/.test(text) || // Степени
+                    /[0-9,\.]+\s*[×·]\s*10/.test(text); // Научная нотация
+  
+  if (!hasNumbers) {
+    return text; // Нет чисел - возвращаем как есть
+  }
+
+  if (!DEEPSEEK_API_KEY) {
+    console.warn('⚠️ DEEPSEEK_API_KEY not set, skipping number conversion');
+    return text;
+  }
+
+  try {
+    // Создаем AbortController для таймаута (2 секунды для быстрого ответа)
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2000);
+    
+    // Используем быстрый запрос к DeepSeek для конвертации
+    const response = await fetch(API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${DEEPSEEK_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        messages: [
+          {
+            role: 'system',
+            content: 'Ты помощник для конвертации чисел в слова на русском языке. Твоя задача - заменить ВСЕ числа (включая десятичные, дроби, научную нотацию типа 5,97 × 10²⁴) на слова с правильным склонением и согласованием. Научную нотацию преобразуй в полную форму (например, "5,97 × 10²⁴" → "пять целых девяносто семь сотых умножить на десять в двадцать четвертой степени" или "пять целых девяносто семь сотых на десять в двадцать четвертой степени"). Сохраняй весь остальной текст без изменений. Отвечай ТОЛЬКО преобразованным текстом, без объяснений.'
+          },
+          {
+            role: 'user',
+            content: `Преобразуй все числа (включая научную нотацию) в слова с правильным склонением:\n\n${text}`
+          }
+        ],
+        max_tokens: 300, // Увеличено для научной нотации
+        temperature: 0.1, // Низкая температура для точности
+        stream: false
+      }),
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      console.warn('⚠️ Number conversion failed, using original text');
+      return text; // В случае ошибки возвращаем оригинал
+    }
+
+    const data = await response.json();
+    const converted = data.choices?.[0]?.message?.content?.trim();
+    
+    if (converted && converted.length > 0) {
+      console.log(`✅ Numbers converted: "${text.substring(0, 50)}..." → "${converted.substring(0, 50)}..."`);
+      return converted;
+    }
+
+    return text; // Fallback
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      console.warn('⚠️ Number conversion timeout (2s), using original text');
+    } else {
+      console.warn('⚠️ Number conversion error:', error.message);
+    }
+    return text; // В случае ошибки возвращаем оригинал
+  }
+}
+
+// Silero TTS endpoint - использует тот же механизм, что и real-time (через voice-backend)
+app.post('/api/tts', async (req, res) => {
+  console.log('🔊 /api/tts endpoint called!', { body: req.body, path: req.path, method: req.method });
+  try {
+    let { text, model = 'silero_ru', voice = 'eugene', speed = 1.0, emotion = 'neutral' } = req.body;
+    
+    // Конвертируем цифры в слова перед отправкой в TTS
+    if (text && typeof text === 'string' && /\d/.test(text)) {
+      text = await convertNumbersToWords(text);
+    }
+
+    if (!text || typeof text !== 'string' || !text.trim()) {
+      return res.status(400).json({ error: 'Text is required' });
+    }
+
+    console.log(`🔊 POST /api/tts | Text: "${text.substring(0, 50)}..." | Model: ${model} | Voice: ${voice}`);
+
+    // Используем HTTP запрос к voice-backend TTS сервису (если запущен)
+    const ttsBackendUrl = process.env.TTS_BACKEND_URL || 'http://127.0.0.1:8002';
+    
+    try {
+      // Создаем AbortController для таймаута
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+      
+      const response = await fetch(`${ttsBackendUrl}/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, model, voice, speed, emotion }),
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const wavBuffer = await response.arrayBuffer();
+        res.setHeader('Content-Type', 'audio/wav');
+        res.setHeader('Content-Length', wavBuffer.byteLength);
+        res.send(Buffer.from(wavBuffer));
+        return;
+      }
+    } catch (httpError) {
+      console.warn('⚠️ TTS backend HTTP request failed, trying direct Python call:', httpError.message);
+    }
+
+    // Fallback: вызываем Python скрипт напрямую
+    const pythonScript = path.join(__dirname, 'voice-backend', 'stt', 'generate_tts_cli.py');
+    const pythonArgs = [pythonScript, text, model, voice, String(speed), emotion];
+
+    const pythonProcess = spawn('python3', pythonArgs, {
+      cwd: path.join(__dirname, 'voice-backend', 'stt'),
+      env: { ...process.env, PYTHONPATH: path.join(__dirname, 'voice-backend', 'stt') }
+    });
+
+    const chunks = [];
+    let stderr = '';
+
+    pythonProcess.stdout.on('data', (data) => {
+      chunks.push(data);
+    });
+
+    pythonProcess.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    pythonProcess.on('close', (code) => {
+      if (code !== 0) {
+        console.error('❌ Silero TTS Python error:', stderr);
+        return res.status(500).json({ error: 'TTS generation failed', details: stderr });
+      }
+
+      const wavBuffer = Buffer.concat(chunks);
+      res.setHeader('Content-Type', 'audio/wav');
+      res.setHeader('Content-Length', wavBuffer.length);
+      res.send(wavBuffer);
+    });
+
+  } catch (error) {
+    console.error('❌ TTS endpoint error:', error);
+    res.status(500).json({ error: 'TTS generation failed', message: error.message });
+  }
 });
 
 // Глобальный JSON error handler для /api (обязателен)

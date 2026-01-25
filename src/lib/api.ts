@@ -355,10 +355,10 @@ class OpenAITTSClient {
   }
 }
 
-// Локальный TTS клиент
+// Локальный TTS клиент (использует Silero TTS через Node.js API)
 class LocalTTSClient {
-  // Используем прокси через Vite в development, прямой URL в production
-  private baseUrl = import.meta.env.DEV ? '' : 'http://localhost:5001';
+  // Используем endpoint в Node.js сервере для генерации Silero TTS
+  private baseUrl = '/api/tts';
 
   async generateTTS(text: string, options: {
     model?: string;
@@ -366,44 +366,53 @@ class LocalTTSClient {
     speed?: number;
   } = {}): Promise<{ audioUrl: string; duration?: number }> {
     try {
-      const response = await fetch(`${this.baseUrl}/tts`, {
+      // Улучшенное определение языка:
+      // 1. Если есть кириллица - русский (даже если есть английский или цифры)
+      // 2. Если только английские буквы (без кириллицы) - английский
+      // 3. По умолчанию русский (для цифр, знаков препинания, смешанного текста)
+      const trimmed = text.trim();
+      if (!trimmed) {
+        throw new Error('Empty text provided for TTS');
+      }
+      
+      const hasCyrillic = /[а-яё]/i.test(trimmed);
+      const hasEnglish = /[a-z]/i.test(trimmed);
+      const isOnlyEnglish = hasEnglish && !hasCyrillic;
+      
+      const model = options.model || (isOnlyEnglish ? 'silero_en' : 'silero_ru');
+      const voice = options.voice || (isOnlyEnglish ? 'en_0' : 'eugene');
+      
+      const response = await fetch(this.baseUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           text: text,
-          voice: options.voice || 'ru',
+          model: model,
+          voice: voice,
           speed: options.speed || 1.0,
+          emotion: 'neutral'
         }),
       });
 
       if (!response.ok) {
         const error = await response.text();
-        throw new Error(`Local TTS API error: ${response.status} ${error}`);
+        throw new Error(`Silero TTS API error: ${response.status} ${error}`);
       }
 
-      const data = await response.json();
+      // Silero TTS Service возвращает WAV файл напрямую
+      const audioBlob = await response.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
 
-      if (data.audio_base64) {
-        // Конвертируем base64 в Blob
-        const audioData = Uint8Array.from(atob(data.audio_base64), c => c.charCodeAt(0));
-        const audioBlob = new Blob([audioData], { type: 'audio/aiff' });
-        const audioUrl = URL.createObjectURL(audioBlob);
+      console.log('✅ Silero TTS: сгенерирована речь, размер:', audioBlob.size, 'байт');
 
-        console.log('✅ Локальный TTS: сгенерирована речь, размер:', audioData.length, 'байт');
-
-        return {
-          audioUrl,
-          duration: undefined
-        };
-      } else {
-        throw new Error('Invalid response from local TTS server');
-      }
+      return {
+        audioUrl,
+        duration: undefined
+      };
     } catch (error) {
-      console.error('❌ Local TTS error:', error);
-      // Fallback to OpenAI TTS if local fails
-      console.log('🔄 Fallback to OpenAI TTS due to local TTS error');
+      console.error('❌ Silero TTS error:', error);
       throw error;
     }
   }
@@ -413,10 +422,10 @@ class LocalTTSClient {
     voice?: string;
     speed?: number;
   } = {}): Promise<{ audioUrl: string; duration?: number }> {
-    console.log('🔊 LOCAL TTS generateTTSRu called with:', { text: text.substring(0, 50), options });
+    console.log('🔊 Silero TTS generateTTSRu called with:', { text: text.substring(0, 50), options });
     return this.generateTTS(text, {
-      model: options.model || 'local',
-      voice: 'ru',
+      model: options.model || 'silero_ru',
+      voice: options.voice || 'eugene',
       speed: options.speed || 1.0,
       ...options
     });
@@ -427,10 +436,10 @@ class LocalTTSClient {
     voice?: string;
     speed?: number;
   } = {}): Promise<{ audioUrl: string; duration?: number }> {
-    console.log('🔊 LOCAL TTS generateTTSEn called with:', { text: text.substring(0, 50), options });
+    console.log('🔊 Silero TTS generateTTSEn called with:', { text: text.substring(0, 50), options });
     return this.generateTTS(text, {
-      model: options.model || 'local',
-      voice: 'en',
+      model: options.model || 'silero_en',
+      voice: options.voice || 'en_0',
       speed: options.speed || 1.0,
       ...options
     });

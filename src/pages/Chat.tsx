@@ -673,7 +673,7 @@ const Chat = () => {
           onChatDeleted={() => setSidebarRefreshTrigger(prev => prev + 1)}
         />
 
-        <SidebarInset className="flex flex-col flex-1 min-w-0 h-full overflow-hidden">
+        <SidebarInset className="flex flex-col flex-1 min-w-0 h-full overflow-hidden" data-chat-container="true">
           <ChatHeader
             onNewChat={handleNewChat}
             internetEnabled={internetEnabled}
@@ -685,7 +685,7 @@ const Chat = () => {
             onToggleVoiceCall={() => setShowVoiceCall(!showVoiceCall)}
           />
 
-          <div className="flex-1 w-full overflow-y-auto overflow-x-hidden min-h-0 relative">
+          <div className="flex-1 w-full overflow-y-auto overflow-x-hidden min-h-0 relative" data-chat-messages="true">
             {/* Voice Call Component - Закреплен вверху чата */}
             {showVoiceCall && (
               <div className="sticky top-0 z-20 bg-background/95 backdrop-blur border-b border-border shadow-sm">

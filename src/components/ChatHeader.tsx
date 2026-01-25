@@ -38,7 +38,7 @@ const ChatHeader = ({
   };
 
   return (
-    <header className="border-b border-border bg-background sticky top-0 z-10">
+    <header className="border-b border-border bg-background sticky top-0 z-10" data-chat-header="true">
       <div className="w-full max-w-5xl mx-auto px-2 sm:px-4 py-3 flex items-center justify-between">
         <div className="flex items-center gap-2 flex-shrink-0 min-w-[2.25rem]">
           {/* Кнопка меню для мобильных устройств */}

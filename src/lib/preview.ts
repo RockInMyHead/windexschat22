@@ -40,7 +40,16 @@ Keys: ${(rawFiles ? Object.keys(rawFiles) : []).join(", ")}
   }
 
   // 3) JS: инлайн + try/catch, чтобы вместо белого экрана вы видели stacktrace
-  const safeJs = `try {\n${js}\n} catch (e) {\n  console.error(e);\n  document.body.innerHTML = '<pre style="padding:16px;color:#b00;white-space:pre-wrap">' + (e && e.stack ? e.stack : String(e)) + '</pre>';\n}\n`;
+  // Экранируем JavaScript код для безопасной вставки в HTML
+  // Заменяем </script> на </scr' + 'ipt> чтобы не закрыть тег раньше времени
+  let escapedJs = js.replace(/<\/script>/gi, "</scr' + 'ipt>");
+  
+  // Исправляем неправильные escape-последовательности (например, \a -> \\a)
+  // Оставляем только валидные escape-последовательности: \n, \t, \r, \', \", \\, \0, \b, \f, \v
+  escapedJs = escapedJs.replace(/\\(?![nrt'"\\0bfvxu0-9])/g, '\\\\');
+  
+  // Используем правильное экранирование для вставки в HTML через шаблонную строку
+  const safeJs = `try {\n${escapedJs}\n} catch (e) {\n  console.error(e);\n  document.body.innerHTML = '<pre style="padding:16px;color:#b00;white-space:pre-wrap">' + (e && e.stack ? e.stack : String(e)) + '</pre>';\n}\n`;
 
   if (/<script[^>]+src=["']\/?app\.js["'][^>]*>\s*<\/script>/i.test(out)) {
     out = out.replace(

@@ -1,11 +1,14 @@
 import React, { useMemo, useState, useRef } from "react";
+import { createPortal } from "react-dom";
 import { InlineMath, BlockMath } from 'react-katex';
-import { Copy, Volume2, Loader2, Trash2, Edit2 } from "lucide-react";
+import { Copy, Volume2, Loader2, Trash2, Edit2, Send } from "lucide-react";
 import DataVisualization, { parseVisualizationConfig, VisualizationConfig } from "./DataVisualization";
 import { ttsClient, localTTSClient, apiClient } from "@/lib/api";
 import { renderPlanJsonForDisplay } from "@/lib/renderInternalPlan";
 import { DeleteMessageModal } from "./DeleteMessageModal";
 import { EditMessageModal } from "./EditMessageModal";
+import { Textarea } from "@/components/ui/textarea";
+import { Button } from "@/components/ui/button";
 
 // Функция выполнения JavaScript кода в изолированном контексте
 const executeJavaScript = async (code: string): Promise<string> => {
@@ -329,8 +332,8 @@ const CodeBlock = ({ code, language }: { code: string; language?: string }) => {
   const [executionResult, setExecutionResult] = useState('');
   const [isExecuting, setIsExecuting] = useState(false);
 
-  // Определяем, можно ли выполнить код в браузере
-  const canExecute = language && ['javascript', 'js', 'python', 'py'].includes(language.toLowerCase());
+  // Определяем, можно ли выполнить код в браузере (Python убран по запросу)
+  const canExecute = language && ['javascript', 'js'].includes(language.toLowerCase());
 
   // Функция выполнения кода
   const executeCode = async () => {
@@ -563,7 +566,23 @@ const parseMarkdown = (
           {currentList.map((item, idx) => (
             <li key={idx} className="flex items-start gap-2">
               <span className="text-primary mt-1.5 flex-shrink-0">▸</span>
-              <span className="flex-1">{renderInlineMarkdown(item.trim(), 0, onWordClick, context)}</span>
+              <span 
+                className="flex-1 cursor-pointer" 
+                style={{ pointerEvents: 'auto' }}
+                onClick={(e) => {
+                  // Если клик на самом span (не на дочернем элементе), извлекаем слово
+                  if (e.target === e.currentTarget && item.trim().length >= 2) {
+                    const word = item.trim().replace(/[.,!?;:—–\-()"«»[\]]/g, '').split(/\s+/)[0];
+                    if (word && word.length >= 2 && onWordClick && context) {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      onWordClick(word, e, context);
+                    }
+                  }
+                }}
+              >
+                {renderInlineMarkdown(item.trim(), 0, onWordClick, context)}
+              </span>
             </li>
           ))}
         </ul>
@@ -679,7 +698,23 @@ const parseMarkdown = (
       result.push(
         <h4 key={`h4-${lineIndex}`} className="text-lg font-bold mt-4 mb-2 text-foreground flex items-center gap-2">
           <span className="text-primary">▸</span>
-          <span>{renderInlineMarkdown(title, 0, onWordClick, context)}</span>
+          <span 
+            style={{ pointerEvents: 'auto' }}
+            onClick={(e) => {
+              // Если клик на самом span (не на дочернем элементе), извлекаем слово
+              if (e.target === e.currentTarget && title.trim().length >= 2) {
+                const word = title.trim().replace(/[.,!?;:—–\-()"«»[\]]/g, '').split(/\s+/)[0];
+                if (word && word.length >= 2 && onWordClick && context) {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  onWordClick(word, e, context);
+                }
+              }
+            }}
+            className="cursor-pointer"
+          >
+            {renderInlineMarkdown(title, 0, onWordClick, context)}
+          </span>
         </h4>
       );
       return;
@@ -693,7 +728,23 @@ const parseMarkdown = (
       result.push(
         <h3 key={`h3-${lineIndex}`} className="text-xl font-bold mt-5 mb-3 text-foreground flex items-center gap-2">
           <span className="text-primary">◆</span>
-          <span>{renderInlineMarkdown(title, 0, onWordClick, context)}</span>
+          <span 
+            style={{ pointerEvents: 'auto' }}
+            onClick={(e) => {
+              // Если клик на самом span (не на дочернем элементе), извлекаем слово
+              if (e.target === e.currentTarget && title.trim().length >= 2) {
+                const word = title.trim().replace(/[.,!?;:—–\-()"«»[\]]/g, '').split(/\s+/)[0];
+                if (word && word.length >= 2 && onWordClick && context) {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  onWordClick(word, e, context);
+                }
+              }
+            }}
+            className="cursor-pointer"
+          >
+            {renderInlineMarkdown(title, 0, onWordClick, context)}
+          </span>
         </h3>
       );
       return;
@@ -707,7 +758,23 @@ const parseMarkdown = (
       result.push(
         <h2 key={`h2-${lineIndex}`} className="text-2xl font-bold mt-6 mb-4 text-foreground flex items-center gap-2 border-b border-border pb-2">
           <span className="text-primary">✦</span>
-          <span>{renderInlineMarkdown(title, 0, onWordClick, context)}</span>
+          <span 
+            style={{ pointerEvents: 'auto' }}
+            onClick={(e) => {
+              // Если клик на самом span (не на дочернем элементе), извлекаем слово
+              if (e.target === e.currentTarget && title.trim().length >= 2) {
+                const word = title.trim().replace(/[.,!?;:—–\-()"«»[\]]/g, '').split(/\s+/)[0];
+                if (word && word.length >= 2 && onWordClick && context) {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  onWordClick(word, e, context);
+                }
+              }
+            }}
+            className="cursor-pointer"
+          >
+            {renderInlineMarkdown(title, 0, onWordClick, context)}
+          </span>
         </h2>
       );
       return;
@@ -721,7 +788,23 @@ const parseMarkdown = (
       result.push(
         <h1 key={`h1-${lineIndex}`} className="text-3xl font-bold mt-6 mb-4 text-foreground flex items-center gap-3 border-b-2 border-primary pb-3">
           <span className="text-primary text-2xl">★</span>
-          <span>{renderInlineMarkdown(title, 0, onWordClick, context)}</span>
+          <span 
+            style={{ pointerEvents: 'auto' }}
+            onClick={(e) => {
+              // Если клик на самом span (не на дочернем элементе), извлекаем слово
+              if (e.target === e.currentTarget && title.trim().length >= 2) {
+                const word = title.trim().replace(/[.,!?;:—–\-()"«»[\]]/g, '').split(/\s+/)[0];
+                if (word && word.length >= 2 && onWordClick && context) {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  onWordClick(word, e, context);
+                }
+              }
+            }}
+            className="cursor-pointer"
+          >
+            {renderInlineMarkdown(title, 0, onWordClick, context)}
+          </span>
         </h1>
       );
       return;
@@ -747,7 +830,23 @@ const parseMarkdown = (
       result.push(
         <div key={`num-${lineIndex}`} className="flex items-start gap-2 my-1.5">
           <span className="text-primary font-bold flex-shrink-0 w-6">{number}.</span>
-          <span className="flex-1">{renderInlineMarkdown(item, 0, onWordClick, context)}</span>
+          <span 
+            className="flex-1 cursor-pointer" 
+            style={{ pointerEvents: 'auto' }}
+            onClick={(e) => {
+              // Если клик на самом span (не на дочернем элементе), извлекаем слово
+              if (e.target === e.currentTarget && item.trim().length >= 2) {
+                const word = item.trim().replace(/[.,!?;:—–\-()"«»[\]]/g, '').split(/\s+/)[0];
+                if (word && word.length >= 2 && onWordClick && context) {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  onWordClick(word, e, context);
+                }
+              }
+            }}
+          >
+            {renderInlineMarkdown(item, 0, onWordClick, context)}
+          </span>
         </div>
       );
       return;
@@ -787,7 +886,7 @@ const renderClickableText = (
   context?: string
 ): React.ReactNode => {
   if (!onWordClick || !context) {
-    return <span key={key}>{text}</span>;
+    return <span key={key} style={{ pointerEvents: 'auto' }}>{text}</span>;
   }
 
   // Разбиваем текст на логические единицы (слова, словосочетания и знаки препинания)
@@ -813,9 +912,14 @@ const renderClickableText = (
         <span
           key={`${key}-segment-${segmentKey++}`}
           className="cursor-pointer hover:bg-primary/20 hover:text-primary transition-colors px-0.5 rounded select-none"
+          style={{ pointerEvents: 'auto' }}
           onClick={(e) => {
             e.stopPropagation(); // Предотвращаем всплытие события
+            e.preventDefault(); // Предотвращаем стандартное поведение
             onWordClick(trimmed, e, context);
+          }}
+          onMouseDown={(e) => {
+            e.stopPropagation(); // Предотвращаем всплытие события при нажатии
           }}
           title={`Нажмите для описания слова "${trimmed}"`}
         >
@@ -824,15 +928,62 @@ const renderClickableText = (
       );
     } else {
       // Обычный текст (пробелы, знаки препинания, стоп-слова)
-      nodes.push(
-        <span key={`${key}-segment-${segmentKey++}`}>
-          {segment}
-        </span>
-      );
+      // Но все равно делаем кликабельным для возможности уточнения
+      const trimmedSegment = segment.trim();
+      const hasLetters = /[а-яА-Яa-zA-ZёЁ0-9]/.test(trimmedSegment);
+      
+      if (hasLetters && trimmedSegment.length >= 2) {
+        // Если есть буквы и длина достаточна, делаем кликабельным
+        nodes.push(
+          <span
+            key={`${key}-segment-${segmentKey++}`}
+            className="cursor-pointer hover:bg-primary/10 hover:text-primary transition-colors px-0.5 rounded"
+            style={{ pointerEvents: 'auto' }}
+            onClick={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              // Извлекаем слово из сегмента (убираем знаки препинания)
+              const word = trimmedSegment.replace(/[.,!?;:—–\-()"«»[\]]/g, '').trim();
+              if (word && word.length >= 2) {
+                onWordClick(word, e, context);
+              }
+            }}
+            title={trimmedSegment.length >= 2 ? `Нажмите для описания "${trimmedSegment}"` : undefined}
+          >
+            {segment}
+          </span>
+        );
+      } else {
+        // Для пробелов и знаков препинания без букв - обычный span
+        nodes.push(
+          <span key={`${key}-segment-${segmentKey++}`}>
+            {segment}
+          </span>
+        );
+      }
     }
   });
 
-  return <span key={key}>{nodes}</span>;
+  return (
+    <span 
+      key={key} 
+      style={{ pointerEvents: 'auto' }}
+      onClick={(e) => {
+        // Если клик произошел на самом контейнере (не на дочернем элементе), 
+        // пытаемся извлечь слово из текста
+        if (e.target === e.currentTarget && text.trim().length >= 2) {
+          const word = text.trim().replace(/[.,!?;:—–\-()"«»[\]]/g, '').split(/\s+/)[0];
+          if (word && word.length >= 2) {
+            e.stopPropagation();
+            e.preventDefault();
+            onWordClick(word, e, context);
+          }
+        }
+      }}
+    >
+      {nodes}
+    </span>
+  );
 };
 
 // Функция для рендеринга inline Markdown (жирный, курсив, код)
@@ -943,7 +1094,7 @@ const renderInlineMarkdown = (
       ? renderInlineMarkdown(part.content, depth + 1, onWordClick, context)
       : part.content;
       nodes.push(
-        <strong key={`bold-${nodeKey++}`} className="font-bold text-foreground break-words overflow-wrap-anywhere">
+        <strong key={`bold-${nodeKey++}`} className="font-bold text-foreground break-words overflow-wrap-anywhere" style={{ pointerEvents: 'auto' }}>
           {boldContent}
         </strong>
       );
@@ -1095,92 +1246,52 @@ const renderMathInReactNodes = (nodes: React.ReactNode): React.ReactNode => {
 };
 
 // Функция для простого рендеринга markdown в tooltip'е
+// Функция для очистки markdown символов из текста
+const cleanMarkdownFromText = (text: string): string => {
+  return text
+    // Убираем заголовки markdown (###, ##, #)
+    .replace(/^#{1,6}\s+/gm, '')
+    // Убираем жирный текст markdown (**текст** или __текст__)
+    .replace(/\*\*([^\*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    // Убираем курсив markdown (*текст* или _текст_)
+    .replace(/(?<!\*)\*([^\*]+)\*(?!\*)/g, '$1')
+    .replace(/(?<!_)_([^_]+)_(?!_)/g, '$1')
+    // Убираем код markdown (`код`)
+    .replace(/`([^`]+)`/g, '$1')
+    // Убираем код блоки (```код```)
+    .replace(/```[\s\S]*?```/g, '')
+    // Убираем ссылки markdown [текст](url)
+    .replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1')
+    // Убираем разделители (---, ===)
+    .replace(/^[=\-]{2,}$/gm, '')
+    // Убираем маркеры списков (*, -, +)
+    .replace(/^[\*\-\+]\s+/gm, '')
+    // Убираем нумерованные списки (1., 2., и т.д.)
+    .replace(/^\d+\.\s+/gm, '')
+    // Убираем лишние пустые строки (более 2 подряд)
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+};
+
 const renderTooltipMarkdown = (text: string): React.ReactNode => {
   if (!text || text === 'Загрузка...') return text;
 
-  const nodes: React.ReactNode[] = [];
-  let nodeKey = 0;
-  let lastIndex = 0;
-
-  // Регулярные выражения для основных markdown элементов
-  const patterns = [
-    // Жирный текст **text** или __text__
-    { regex: /(\*\*|__)(.*?)\1/g, render: (match: string, content: string) =>
-      <strong key={`bold-${nodeKey++}`} className="font-bold text-foreground">{content}</strong>
-    },
-    // Курсив *text* или _text_
-    { regex: /(\*|_)(.*?)\1/g, render: (match: string, content: string) =>
-      <em key={`italic-${nodeKey++}`} className="italic text-foreground">{content}</em>
-    },
-    // Код `text`
-    { regex: /`([^`]+)`/g, render: (match: string, content: string) =>
-      <code key={`code-${nodeKey++}`} className="bg-muted px-1 py-0.5 rounded text-xs font-mono">{content}</code>
-    },
-    // Кавычки «text»
-    { regex: /«([^»]+)»/g, render: (match: string, content: string) =>
-      <span key={`quote-${nodeKey++}`}>"{content}"</span>
-    }
-  ];
-
-  // Собираем все совпадения
-  const matches: Array<{
-    start: number;
-    end: number;
-    render: (match: string, content: string) => React.ReactNode;
-    match: string;
-    content: string;
-  }> = [];
-
-  patterns.forEach(({ regex, render }) => {
-    let match;
-    while ((match = regex.exec(text)) !== null) {
-      matches.push({
-        start: match.index,
-        end: match.index + match[0].length,
-        render,
-        match: match[0],
-        content: match[2] || match[1]
-      });
-    }
-  });
-
-  // Сортируем по позиции
-  matches.sort((a, b) => a.start - b.start);
-
-  // Удаляем пересекающиеся совпадения (приоритет: жирный > курсив > код)
-  const filteredMatches = matches.filter((match, index) => {
-    return !matches.some((other, otherIndex) =>
-      otherIndex !== index &&
-      match.start < other.end &&
-      match.end > other.start &&
-      other !== match
-    );
-  });
-
-  // Строим результат
-  filteredMatches.forEach((match) => {
-    // Добавляем текст до совпадения
-    if (match.start > lastIndex) {
-      const textBefore = text.substring(lastIndex, match.start);
-      if (textBefore.trim()) {
-        nodes.push(<span key={`text-${nodeKey++}`}>{textBefore}</span>);
-      }
-    }
-
-    // Добавляем отрендеренный элемент
-    nodes.push(match.render(match.match, match.content));
-    lastIndex = match.end;
-  });
-
-  // Добавляем оставшийся текст
-  if (lastIndex < text.length) {
-    const textAfter = text.substring(lastIndex);
-    if (textAfter.trim()) {
-      nodes.push(<span key={`text-${nodeKey++}`}>{textAfter}</span>);
-    }
-  }
-
-  return nodes.length > 0 ? <>{nodes}</> : text;
+  // Очищаем markdown символы из текста
+  const cleanText = cleanMarkdownFromText(text);
+  
+  // Разбиваем на строки для корректного отображения
+  const lines = cleanText.split('\n').filter(line => line.trim());
+  
+  return (
+    <>
+      {lines.map((line, index) => (
+        <span key={index} className="block mb-1">
+          {line}
+        </span>
+      ))}
+    </>
+  );
 };
 
 // Компонент для всплывающего окна с описанием слова
@@ -1196,41 +1307,218 @@ const WordTooltip = ({
   onClose: () => void;
 }) => {
   const [isHovered, setIsHovered] = React.useState(false);
+  const [inputValue, setInputValue] = React.useState('');
+  const [isInputFocused, setIsInputFocused] = React.useState(false);
+  const [llmResponse, setLlmResponse] = React.useState<string>('');
+  const [isLoadingResponse, setIsLoadingResponse] = React.useState(false);
+  const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+  const responseRef = React.useRef<HTMLDivElement>(null);
+
+  // Эффект для добавления/удаления blur эффекта на чат
+  React.useEffect(() => {
+    if (isInputFocused) {
+      // Добавляем data-атрибут к body для применения blur к чату через CSS
+      document.body.setAttribute('data-tooltip-focused', 'true');
+      // Добавляем класс для плавного перехода
+      document.body.style.transition = 'filter 0.3s ease';
+    } else {
+      // Убираем data-атрибут
+      document.body.removeAttribute('data-tooltip-focused');
+    }
+
+    // Cleanup при размонтировании
+    return () => {
+      document.body.removeAttribute('data-tooltip-focused');
+    };
+  }, [isInputFocused]);
+
+  const handleSend = async () => {
+    if (!inputValue.trim() || isLoadingResponse) return;
+
+    setIsLoadingResponse(true);
+    const userMessage = inputValue.trim();
+    setInputValue(''); // Очищаем поле ввода сразу
+
+    try {
+      // Формируем промпт с инструкцией о краткости
+      const promptWithInstruction = `Дай краткий и точный ответ (не более 2-3 предложений): ${userMessage}`;
+      
+      // Отправляем сообщение через API
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messages: [{ role: 'user', content: promptWithInstruction }],
+          model: 'lite',
+          stream: true, // Включаем стриминг для надежности
+          max_tokens: 200, // Ограничиваем ответ до 200 токенов для краткости
+          userId: 1,
+          sessionId: Date.now()
+        })
+      });
+
+      if (response.ok) {
+        // Обрабатываем стриминг
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let fullText = '';
+
+        if (reader) {
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+
+              const chunk = decoder.decode(value, { stream: true });
+              const lines = chunk.split('\n');
+
+              for (const line of lines) {
+                const trimmedLine = line.trim();
+                if (trimmedLine.startsWith('data: ')) {
+                  try {
+                    const jsonStr = trimmedLine.slice(6);
+                    if (jsonStr === '[DONE]') continue;
+
+                    const data = JSON.parse(jsonStr);
+                    if (data.choices && data.choices[0]?.delta?.content) {
+                      fullText += data.choices[0].delta.content;
+                      setLlmResponse(fullText);
+                      
+                      // Прокручиваем к ответу
+                      responseRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
+                    }
+                  } catch (e) {
+                    console.log('⚠️ Ошибка парсинга чанка в tooltip:', e);
+                  }
+                }
+              }
+            }
+            console.log('✅ Стриминг ответа в tooltip завершен');
+          } catch (streamError) {
+            console.error('❌ Ошибка стриминга в tooltip:', streamError);
+          }
+        } else {
+          // Fallback если нет reader
+          const data = await response.json();
+          const responseText = data.content || data.response || data.message || 'Ответ получен';
+          setLlmResponse(responseText);
+        }
+      } else {
+        console.error('❌ Ошибка отправки сообщения:', response.statusText);
+        setLlmResponse('Ошибка: не удалось получить ответ от сервера');
+      }
+    } catch (error) {
+      console.error('❌ Ошибка при отправке сообщения:', error);
+      setLlmResponse('Ошибка: не удалось отправить сообщение');
+    } finally {
+      setIsLoadingResponse(false);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  };
 
   // Убрано автозакрытие - tooltip закрывается только по кнопке ✕
 
   return (
-    <div
-      className="fixed z-50 bg-background border border-border rounded-lg shadow-lg p-3 max-w-xs"
-      style={{
-        left: position.x,
-        top: position.y,
-        transform: 'translate(-50%, -100%)',
-      }}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-    >
-      <div className="flex items-center justify-between mb-2">
-        <span className="font-semibold text-primary text-sm">"{word}"</span>
-        <button
-          onClick={onClose}
-          className="text-muted-foreground hover:text-foreground ml-2 text-xs"
-          title="Закрыть"
-        >
-          ✕
-        </button>
+      <div
+        className="fixed z-50 bg-background border border-border rounded-lg shadow-lg p-3 max-w-xs max-h-[500px] flex flex-col"
+        data-word-tooltip="true"
+        style={{
+          left: position.x,
+          top: position.y,
+          transform: 'translate(-50%, -100%)',
+          filter: 'none',
+        }}
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
+      >
+        {/* Заголовок */}
+        <div className="flex items-center justify-between mb-2 shrink-0">
+          <span className="font-semibold text-primary text-sm">"{word}"</span>
+          <button
+            onClick={onClose}
+            className="text-muted-foreground hover:text-foreground ml-2 text-xs"
+            title="Закрыть"
+          >
+            ✕
+          </button>
+        </div>
+        
+        {/* Область с описанием и ответом LLM - с прокруткой */}
+        <div className="flex-1 overflow-y-auto min-h-0 mb-3">
+          <div className="text-sm text-muted-foreground leading-relaxed mb-3">
+            {description === 'Загрузка...' ? (
+              <span className="flex items-center gap-2">
+                <div className="animate-spin rounded-full h-3 w-3 border border-primary border-t-transparent" />
+                {description}
+              </span>
+            ) : (
+              renderTooltipMarkdown(description)
+            )}
+          </div>
+          
+          {/* Ответ от LLM */}
+          {llmResponse && (
+            <div 
+              ref={responseRef}
+              className="border-t border-border pt-3 mt-3 text-sm text-foreground leading-relaxed"
+            >
+              <div className="font-semibold text-primary text-xs mb-2">Ответ:</div>
+              <div className="text-sm text-foreground">
+                {renderTooltipMarkdown(llmResponse)}
+              </div>
+            </div>
+          )}
+          
+          {/* Индикатор загрузки */}
+          {isLoadingResponse && (
+            <div className="border-t border-border pt-3 mt-3 flex items-center gap-2 text-sm text-muted-foreground">
+              <div className="animate-spin rounded-full h-3 w-3 border border-primary border-t-transparent" />
+              <span>Отправка запроса...</span>
+            </div>
+          )}
+        </div>
+        
+        {/* Поле ввода и кнопка отправки */}
+        <div className="border-t border-border pt-3 mt-3 shrink-0">
+          <div className="flex gap-2">
+            <Textarea
+              ref={textareaRef}
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              onFocus={() => setIsInputFocused(true)}
+              onBlur={() => {
+                // Небольшая задержка, чтобы кнопка успела обработать клик
+                setTimeout(() => setIsInputFocused(false), 200);
+              }}
+              onKeyDown={handleKeyDown}
+              placeholder="Задать вопрос..."
+              className="h-[40px] resize-none text-sm"
+              disabled={isLoadingResponse}
+            />
+            <Button
+              onClick={handleSend}
+              disabled={!inputValue.trim() || isLoadingResponse}
+              size="icon"
+              className="shrink-0 h-[40px] w-[40px]"
+              title="Отправить"
+            >
+              {isLoadingResponse ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Send className="h-3 w-3" />
+              )}
+            </Button>
+          </div>
+        </div>
       </div>
-      <div className="text-sm text-muted-foreground leading-relaxed">
-        {description === 'Загрузка...' ? (
-          <span className="flex items-center gap-2">
-            <div className="animate-spin rounded-full h-3 w-3 border border-primary border-t-transparent" />
-            {description}
-          </span>
-        ) : (
-          renderTooltipMarkdown(description)
-        )}
-      </div>
-    </div>
   );
 };
 
@@ -1396,7 +1684,9 @@ const ChatMessage = ({ message, selectedModel, onMessageDelete, onMessageEdit }:
             if (fallbackResponse.ok) {
               const data = await fallbackResponse.json();
               description = data.content || data.response || 'Описание не найдено';
-              setTooltip(prev => prev ? { ...prev, description } : null);
+              // Очищаем markdown перед обновлением тултипа
+              const cleanDescription = cleanMarkdownFromText(description);
+              setTooltip(prev => prev ? { ...prev, description: cleanDescription } : null);
             }
           } catch (fallbackError) {
             console.error('❌ Fallback тоже не сработал:', fallbackError);
@@ -1423,6 +1713,9 @@ const ChatMessage = ({ message, selectedModel, onMessageDelete, onMessageEdit }:
           if (fallbackResponse.ok) {
             const data = await fallbackResponse.json();
             description = data.content || data.response || 'Описание не найдено';
+            // Очищаем markdown перед обновлением тултипа
+            const cleanDescription = cleanMarkdownFromText(description);
+            setTooltip(prev => prev ? { ...prev, description: cleanDescription } : null);
           }
         } catch (fallbackError) {
           console.error('❌ Обычный запрос тоже не сработал:', fallbackError);
@@ -1431,7 +1724,9 @@ const ChatMessage = ({ message, selectedModel, onMessageDelete, onMessageEdit }:
       }
 
       console.log('✅ Описание сгенерировано:', description);
-      return description || 'Описание не найдено';
+      // Очищаем markdown символы перед возвратом
+      const cleanDescription = cleanMarkdownFromText(description || 'Описание не найдено');
+      return cleanDescription;
 
     } catch (error) {
       console.error('❌ Ошибка при генерации описания слова:', error);
@@ -1617,55 +1912,123 @@ const ChatMessage = ({ message, selectedModel, onMessageDelete, onMessageEdit }:
     setTooltip(prev => prev ? { ...prev, description } : null);
   };
 
-  // TTS functionality
+  // Функция разбиения текста на мелкие чанки (5-10 слов) для быстрой озвучки
+  const splitIntoChunks = (text: string, wordsPerChunk: number = 8): string[] => {
+    const words = text.split(/\s+/);
+    const chunks: string[] = [];
+    
+    for (let i = 0; i < words.length; i += wordsPerChunk) {
+      const chunk = words.slice(i, i + wordsPerChunk).join(' ');
+      if (chunk.trim().length > 0) {
+        chunks.push(chunk.trim());
+      }
+    }
+    
+    return chunks;
+  };
+
+  // TTS functionality с потоковым воспроизведением по чанкам
   const generateTTS = async () => {
     if (!message.content.trim()) return;
 
     setIsGeneratingTTS(true);
+    setIsPlayingAudio(true);
+    
     try {
-      // Используем локальный TTS по умолчанию, OpenAI только с @openai
-      const useLocalTTS = !message.content.includes('@openai');
-      const selectedTTSClient = useLocalTTS ? localTTSClient : ttsClient;
+      // Очищаем текст от markdown
+      const cleanText = message.content
+        .replace(/\*\*/g, '')
+        .replace(/\*/g, '')
+        .replace(/`/g, '')
+        .replace(/#{1,6}\s/g, '')
+        .trim();
 
-      console.log(`🎵 TTS DEBUG:`, {
-        messageContent: message.content,
-        containsAtOpenAI: message.content.includes('@openai'),
-        useLocalTTS: useLocalTTS,
-        selectedClient: useLocalTTS ? 'localTTSClient' : 'ttsClient (OpenAI)',
-        cleanText: message.content.replace('@openai', '').trim()
-      });
+      console.log(`🎵 Streaming TTS started for text length: ${cleanText.length}`);
 
-      // Очищаем текст от @openai для генерации речи
-      const cleanText = message.content.replace('@openai', '').trim();
+      // Разбиваем на чанки по 8 слов
+      const chunks = splitIntoChunks(cleanText, 8);
+      console.log(`📝 Split into ${chunks.length} chunks`);
 
-      // Определяем язык текста (простая эвристика)
-      const hasCyrillic = /[а-яё]/i.test(cleanText);
+      // Функция для определения языка чанка
+      const detectChunkLanguage = (chunk: string): 'ru' | 'en' => {
+        const trimmed = chunk.trim();
+        if (!trimmed) return 'ru'; // Пустой чанк - пропускаем
+        
+        // Если есть кириллица - русский (даже если есть английский или цифры)
+        if (/[а-яё]/i.test(trimmed)) return 'ru';
+        
+        // Если только английские буквы (без кириллицы) - английский
+        if (/[a-z]/i.test(trimmed) && !/[а-яё]/i.test(trimmed)) return 'en';
+        
+        // Для цифр, знаков препинания, смешанного текста - используем русский
+        // (русская модель Silero лучше обрабатывает цифры и смешанный контент)
+        return 'ru';
+      };
 
-      const result = hasCyrillic
-        ? await selectedTTSClient.generateTTSRu(cleanText)
-        : await selectedTTSClient.generateTTSEn(cleanText);
-      setAudioUrl(result.audioUrl);
+      // Создаем AudioContext для последовательного воспроизведения
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      let currentTime = audioContext.currentTime;
+      const audioQueue: AudioBufferSourceNode[] = [];
 
-      // Создаем аудио элемент и настраиваем обработчики
-      const audio = new Audio(result.audioUrl);
-      audioRef.current = audio;
+      // Функция для генерации и добавления аудио в очередь
+      const generateAndQueue = async (chunk: string, index: number) => {
+        try {
+          // Пропускаем пустые чанки
+          if (!chunk.trim()) return;
+          
+          console.log(`🎤 Generating audio for chunk ${index + 1}/${chunks.length}: "${chunk.substring(0, 30)}..."`);
+          
+          // Определяем язык для каждого чанка отдельно
+          const chunkLang = detectChunkLanguage(chunk);
+          const result = chunkLang === 'ru'
+            ? await localTTSClient.generateTTSRu(chunk)
+            : await localTTSClient.generateTTSEn(chunk);
 
-      audio.addEventListener('play', () => setIsPlayingAudio(true));
-      audio.addEventListener('pause', () => setIsPlayingAudio(false));
-      audio.addEventListener('ended', () => setIsPlayingAudio(false));
-      audio.addEventListener('error', () => {
-        setIsPlayingAudio(false);
-        console.error('❌ Audio playback error');
-      });
+          // Загружаем аудио
+          const response = await fetch(result.audioUrl);
+          const arrayBuffer = await response.arrayBuffer();
+          const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
 
-      // Автоматически воспроизводим аудио
-      await audio.play();
+          // Создаем источник и планируем воспроизведение
+          const source = audioContext.createBufferSource();
+          source.buffer = audioBuffer;
+          source.connect(audioContext.destination);
+
+          // Запускаем воспроизведение в нужное время
+          source.start(currentTime);
+          currentTime += audioBuffer.duration;
+          
+          audioQueue.push(source);
+
+          // Первый чанк - начинаем воспроизведение сразу
+          if (index === 0) {
+            console.log('🔊 Started playing first chunk (~0.3-0.5s delay)');
+            setIsGeneratingTTS(false); // Убираем индикатор загрузки
+          }
+
+          // Обработчик окончания последнего фрагмента
+          if (index === chunks.length - 1) {
+            source.onended = () => {
+              console.log('✅ All audio playback completed');
+              setIsPlayingAudio(false);
+              audioQueue.forEach(s => s.disconnect());
+            };
+          }
+
+        } catch (error) {
+          console.error(`❌ Failed to generate audio for chunk ${index + 1}:`, error);
+        }
+      };
+
+      // Генерируем и воспроизводим аудио последовательно (для быстрого первого ответа)
+      for (let i = 0; i < chunks.length; i++) {
+        await generateAndQueue(chunks[i], i);
+      }
+
     } catch (error) {
-      console.error('❌ TTS generation failed:', error);
-      setIsPlayingAudio(false);
-      // Не показываем ошибку пользователю, просто логируем
-    } finally {
+      console.error('❌ TTS streaming failed:', error);
       setIsGeneratingTTS(false);
+      setIsPlayingAudio(false);
     }
   };
 
@@ -1745,7 +2108,7 @@ const ChatMessage = ({ message, selectedModel, onMessageDelete, onMessageEdit }:
           isUser
             ? "bg-primary text-primary-foreground ml-auto"
             : "bg-secondary text-secondary-foreground"
-        }`}>
+        }`} style={{ pointerEvents: 'auto' }}>
           {/* Если есть визуализация, показываем текст до/после */}
           {visualizationConfig ? (
             <>
@@ -1833,14 +2196,15 @@ const ChatMessage = ({ message, selectedModel, onMessageDelete, onMessageEdit }:
         </div>
       )}
 
-      {/* Всплывающее окно с описанием слова */}
-      {tooltip && (
+      {/* Всплывающее окно с описанием слова - рендерим через Portal вне размытого контейнера */}
+      {tooltip && createPortal(
         <WordTooltip
           word={tooltip.word}
           description={tooltip.description}
           position={tooltip.position}
           onClose={() => setTooltip(null)}
-        />
+        />,
+        document.body
       )}
 
       {/* Модальное окно подтверждения удаления */}

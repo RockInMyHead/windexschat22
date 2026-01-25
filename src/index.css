@@ -297,4 +297,38 @@ All colors MUST be HSL.
   body {
     @apply bg-background text-foreground;
   }
+
+  /* Blur эффект для области сообщений при фокусе на tooltip */
+  body[data-tooltip-focused="true"] [data-chat-messages="true"] {
+    filter: blur(2px);
+    transition: filter 0.3s ease;
+  }
+  
+  /* Исключаем tooltip из blur - он должен быть четким (более специфичные селекторы) */
+  body[data-tooltip-focused="true"] [data-word-tooltip="true"],
+  body[data-tooltip-focused="true"] [data-word-tooltip="true"] *,
+  body[data-tooltip-focused="true"] .fixed.z-50,
+  body[data-tooltip-focused="true"] [class*="fixed"][class*="z-50"],
+  body[data-tooltip-focused="true"] div[class*="fixed"][class*="z-50"],
+  body[data-tooltip-focused="true"] div[class*="fixed"][class*="z-50"] *,
+  body[data-tooltip-focused="true"] [style*="left"][style*="top"][style*="transform"],
+  body[data-tooltip-focused="true"] [style*="left"][style*="top"][style*="transform"] * {
+    filter: none !important;
+  }
+  
+  /* Исключаем ChatHeader из blur */
+  body[data-tooltip-focused="true"] [data-chat-header="true"],
+  body[data-tooltip-focused="true"] [data-chat-header="true"] *,
+  body[data-tooltip-focused="true"] header,
+  body[data-tooltip-focused="true"] header * {
+    filter: none !important;
+  }
+  
+  /* Исключаем область ввода из blur */
+  body[data-tooltip-focused="true"] [data-chat-container="true"] form,
+  body[data-tooltip-focused="true"] [data-chat-container="true"] form *,
+  body[data-tooltip-focused="true"] [data-chat-container="true"] [class*="border-t"][class*="bg-background"],
+  body[data-tooltip-focused="true"] [data-chat-container="true"] [class*="border-t"][class*="bg-background"] * {
+    filter: none !important;
+  }
 }

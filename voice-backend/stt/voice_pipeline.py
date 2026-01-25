@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import struct
 import time
 import uuid
@@ -16,6 +17,68 @@ import tts_silero
 
 # Настройка логирования
 logger = logging.getLogger("voice_pipeline")
+
+# Функция для быстрой конвертации цифр в слова
+async def convert_numbers_to_words(text: str) -> str:
+    """Конвертирует цифры в слова с правильным склонением через LLM"""
+    if not text:
+        return text
+    
+    # Проверяем наличие цифр, научной нотации или математических символов
+    has_numbers = (
+        re.search(r'\d', text) or  # Обычные цифры
+        re.search(r'[×·]', text) or  # Знак умножения
+        re.search(r'[²³⁴⁵⁶⁷⁸⁹¹⁰]', text) or  # Степени
+        re.search(r'[0-9,\.]+\s*[×·]\s*10', text)  # Научная нотация
+    )
+    
+    if not has_numbers:
+        return text  # Нет чисел - возвращаем как есть
+    
+    try:
+        llm_base_url = os.getenv('LLM_BASE_URL', 'https://api.deepseek.com')
+        llm_api_key = os.getenv('LLM_API_KEY', '')
+        
+        if not llm_api_key:
+            logger.warning("LLM_API_KEY not set, skipping number conversion")
+            return text
+        
+        # Быстрый запрос с таймаутом 2 секунды
+        async with httpx.AsyncClient(timeout=2.0) as client:
+                    response = await client.post(
+                        f"{llm_base_url}/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {llm_api_key}"},
+                        json={
+                            "model": "deepseek-chat",
+                            "messages": [
+                                {
+                                    "role": "system",
+                                    "content": "Ты помощник для конвертации чисел в слова на русском языке. Замени ВСЕ числа (включая десятичные, дроби, научную нотацию типа 5,97 × 10²⁴) на слова с правильным склонением. Научную нотацию преобразуй в полную форму (например, '5,97 × 10²⁴' → 'пять целых девяносто семь сотых умножить на десять в двадцать четвертой степени' или 'пять целых девяносто семь сотых на десять в двадцать четвертой степени'). Сохраняй весь остальной текст без изменений. Отвечай ТОЛЬКО преобразованным текстом, без объяснений."
+                                },
+                                {
+                                    "role": "user",
+                                    "content": f"Преобразуй все числа (включая научную нотацию) в слова с правильным склонением:\n\n{text}"
+                                }
+                            ],
+                            "max_tokens": 300,  # Увеличено для научной нотации
+                            "temperature": 0.1
+                        }
+                    )
+            
+            if response.status_code == 200:
+                data = response.json()
+                converted = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                if converted:
+                    logger.info(f"✅ Numbers converted: {text[:50]}... → {converted[:50]}...")
+                    return converted
+        
+        return text  # Fallback на оригинал
+    except asyncio.TimeoutError:
+        logger.warning("Number conversion timeout, using original text")
+        return text
+    except Exception as e:
+        logger.warning(f"Number conversion error: {e}, using original text")
+        return text
 
 class VoiceState(Enum):
     IDLE = "idle"
@@ -310,17 +373,41 @@ class VoicePipeline:
                 continue
 
             buf += tok
-            if any(p in tok for p in ".!?\n") and len(buf) > 20:
-                await self._synthesize_and_send(current_u, buf.strip())
+            # Отправляем чанк размером ~10 символов для максимально быстрого старта
+            # Условия: минимум 10 символов И (пунктуация в текущем токене ИЛИ пробел в буфере ИЛИ превышение 50 символов)
+            has_punctuation = any(p in tok for p in ".!?\n")
+            has_space = " " in buf
+            should_send = len(buf) >= 10 and (has_punctuation or has_space or len(buf) > 50)
+            if should_send:
+                chunk_text = buf.strip()
+                # Пропускаем слишком короткие или пустые чанки
+                if chunk_text and len(chunk_text) >= 3:
+                    await self._synthesize_and_send(current_u, chunk_text)
                 buf = ""
 
     async def _synthesize_and_send(self, u_id: int, text: str):
         if not text or u_id != self.active_output_u: return
         
         try:
+            # Конвертируем цифры в слова перед TTS (с таймаутом и обработкой ошибок)
+            converted_text = text
+            try:
+                converted_text = await asyncio.wait_for(convert_numbers_to_words(text), timeout=1.5)
+            except asyncio.TimeoutError:
+                logger.warning(f"Number conversion timeout for text: {text[:50]}..., using original")
+                converted_text = text
+            except Exception as conv_error:
+                logger.warning(f"Number conversion failed: {conv_error}, using original text")
+                converted_text = text
+            
+            # Проверяем, что текст не пустой после конвертации
+            if not converted_text or not converted_text.strip():
+                logger.warning(f"Empty text after conversion, skipping TTS")
+                return
+            
             self.tts_playing = True
             wav = await tts_silero.synthesize_wav(
-                text,
+                converted_text,
                 model_name=self.preset["tts"]["model"],
                 voice=self.preset["tts"]["voice"]
             )
@@ -328,6 +415,8 @@ class VoicePipeline:
             await self.send_audio_cb(u_id, wav)
         except Exception as e:
             logger.error(f"TTS Error: {e}")
+            # Отправляем ошибку клиенту
+            await self.send_event_cb({"type": "tts_error", "utterance_id": u_id, "error": str(e)})
 
     async def abort_output(self, reason: str):
         print(f"[PIPELINE] Aborting output: {reason}")

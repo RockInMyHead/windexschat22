@@ -883,6 +883,7 @@ class TTSBackend:
                     r.raise_for_status()
                     return r.content
             except Exception as http_e:
+                print(f"[TTS] HTTP fallback also failed: {http_e}")
                 raise RuntimeError(f"TTS synthesis failed (direct: {e}, HTTP: {http_e})")
             raise RuntimeError(f"TTS synthesis failed: {e}")
 
@@ -1751,7 +1752,7 @@ async def handler(ws: WebSocketServerProtocol):
                 # Это гарантирует, что к моменту получения tts_end клиентом, состояние уже обновлено
                 tts_playing = False
                 tts_sending = False
-                
+
                 # State transition: TTS finished
                 if voice_state != VoiceState.ASSISTANT_TTS:
                     proto_violation("tts_end received while not in TTS state")

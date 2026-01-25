@@ -49,11 +49,97 @@ export const VoiceCall: React.FC<VoiceCallProps> = ({
   const isLLMRespondingRef = useRef(false);
   const ttsChunkCountRef = useRef(0);
   const isTTSActiveRef = useRef(false);
+  const [audioLevels, setAudioLevels] = useState<number[]>([0.3, 0.5, 0.7, 0.5, 0.3]);
+  const audioLevelsIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const stopAnimationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const analyserNodeRef = useRef<AnalyserNode | null>(null);
+  const isAudioPlayingRef = useRef(false);
 
   // Sync ref with state
   useEffect(() => {
     isMutedRef.current = isMuted;
   }, [isMuted]);
+
+  // Функция для запуска анимации звуковой волны на основе реального аудио
+  const startAudioWaveAnimation = useCallback(() => {
+    // Очищаем предыдущий интервал и таймаут остановки, если есть
+    if (audioLevelsIntervalRef.current) {
+      clearInterval(audioLevelsIntervalRef.current);
+    }
+    if (stopAnimationTimeoutRef.current) {
+      clearTimeout(stopAnimationTimeoutRef.current);
+      stopAnimationTimeoutRef.current = null;
+    }
+
+    // Создаем анимацию на основе реальных данных аудио
+    audioLevelsIntervalRef.current = setInterval(() => {
+      const analyser = analyserNodeRef.current;
+      
+      if (analyser && isAudioPlayingRef.current) {
+        // Получаем данные частотного анализа
+        const bufferLength = analyser.frequencyBinCount;
+        const dataArray = new Uint8Array(bufferLength);
+        analyser.getByteFrequencyData(dataArray);
+        
+        // Разбиваем частотный диапазон на 5 полос для 5 баров
+        const bands = 5;
+        const bandSize = Math.floor(bufferLength / bands);
+        const levels: number[] = [];
+        
+        for (let i = 0; i < bands; i++) {
+          let sum = 0;
+          const start = i * bandSize;
+          const end = start + bandSize;
+          
+          for (let j = start; j < end; j++) {
+            sum += dataArray[j];
+          }
+          
+          // Нормализуем значение от 0 до 1
+          const average = sum / bandSize;
+          const normalized = average / 255;
+          
+          // Применяем нелинейное масштабирование для более визуально приятной анимации
+          const scaled = Math.pow(normalized, 0.5); // Квадратный корень для более плавной анимации
+          
+          // Ограничиваем минимальное значение для видимости
+          levels.push(Math.max(0.2, Math.min(1.0, scaled * 2)));
+        }
+        
+        setAudioLevels(levels);
+      } else {
+        // Если аудио не воспроизводится, используем статичные значения
+        setAudioLevels([0.3, 0.5, 0.7, 0.5, 0.3]);
+      }
+    }, 50); // Обновляем каждые 50мс для плавной анимации
+  }, []);
+
+  // Функция для плавной остановки анимации
+  const stopAudioWaveAnimation = useCallback((delay = 1500) => {
+    // Если уже запланирована остановка, не делаем ничего
+    if (stopAnimationTimeoutRef.current) return;
+
+    stopAnimationTimeoutRef.current = setTimeout(() => {
+      if (audioLevelsIntervalRef.current) {
+        clearInterval(audioLevelsIntervalRef.current);
+        audioLevelsIntervalRef.current = null;
+      }
+      setAudioLevels([0.3, 0.5, 0.7, 0.5, 0.3]);
+      stopAnimationTimeoutRef.current = null;
+    }, delay);
+  }, []);
+
+  // Очистка интервала при размонтировании
+  useEffect(() => {
+    return () => {
+      if (audioLevelsIntervalRef.current) {
+        clearInterval(audioLevelsIntervalRef.current);
+      }
+      if (stopAnimationTimeoutRef.current) {
+        clearTimeout(stopAnimationTimeoutRef.current);
+      }
+    };
+  }, []);
 
   /**
    * Initialize WebSocket connection
@@ -145,6 +231,7 @@ export const VoiceCall: React.FC<VoiceCallProps> = ({
           setLlmResponse('');
           setCallState('speaking');
           onLLMResponse?.('', true, false); // isStart = true
+          // Анимация будет запущена автоматически при воспроизведении аудио
         }
         break;
 
@@ -158,6 +245,7 @@ export const VoiceCall: React.FC<VoiceCallProps> = ({
         isLLMRespondingRef.current = false;
         setCallState('active');
         onLLMResponse?.('', false, true); // isEnd = true
+        // Анимация остановится автоматически при окончании воспроизведения аудио
         break;
 
       case 'llm_error':
@@ -178,11 +266,13 @@ export const VoiceCall: React.FC<VoiceCallProps> = ({
           isTTSActiveRef.current = true;
           ttsChunkCountRef.current = 0;
           setCallState('speaking');
+          // Анимация будет запущена автоматически при воспроизведении аудио
           break;
 
       case 'tts_end':
         console.log(`🔊 TTS ended (received ${ttsChunkCountRef.current} audio chunks)`);
         isTTSActiveRef.current = false;
+        // Анимация остановится автоматически при окончании воспроизведения аудио
         // Не переводим в idle, чтобы звонок не прерывался
         if (protocolVersion < 2) {
           setCallState('active');
@@ -248,10 +338,12 @@ export const VoiceCall: React.FC<VoiceCallProps> = ({
 
      const playbackCtx = playbackAudioContextRef.current;
 
-     if (audioQueueRef.current.length === 0) {
-       isPlayingRef.current = false;
-       return;
-     }
+    if (audioQueueRef.current.length === 0) {
+      isPlayingRef.current = false;
+      isAudioPlayingRef.current = false;
+      stopAudioWaveAnimation(500); // Плавная остановка анимации
+      return;
+    }
  
      isPlayingRef.current = true;
      const wavBytes = audioQueueRef.current.shift()!;
@@ -283,22 +375,43 @@ export const VoiceCall: React.FC<VoiceCallProps> = ({
        const audioBuffer = await playbackCtx.decodeAudioData(audioData as ArrayBuffer);
        console.log(`✅ Audio decoded: ${audioBuffer.duration.toFixed(2)}s, ${audioBuffer.numberOfChannels} channels, ${audioBuffer.sampleRate}Hz`);
        
-       const source = playbackCtx.createBufferSource();
-       source.buffer = audioBuffer;
-       
-       // Создаем GainNode для контроля громкости
-       const gainNode = playbackCtx.createGain();
-       gainNode.gain.value = 1.0; // Полная громкость
-       source.connect(gainNode);
-       gainNode.connect(playbackCtx.destination);
-       
-       source.onended = () => {
-         console.log('✅ Audio chunk playback ended');
-         playNextAudio();
-       };
- 
-       source.start(0);
-       console.log(`🔊 Audio playback started! State: ${playbackCtx.state}, Duration: ${audioBuffer.duration.toFixed(2)}s`);
+      const source = playbackCtx.createBufferSource();
+      source.buffer = audioBuffer;
+      
+      // Создаем AnalyserNode для анализа аудио в реальном времени
+      // Важно: создаем в том же AudioContext, что и source
+      // Если AnalyserNode был создан в другом контексте, пересоздаем его
+      if (!analyserNodeRef.current || analyserNodeRef.current.context !== playbackCtx) {
+        analyserNodeRef.current = playbackCtx.createAnalyser();
+        analyserNodeRef.current.fftSize = 256; // Размер FFT для анализа
+        analyserNodeRef.current.smoothingTimeConstant = 0.8; // Сглаживание для плавной анимации
+      }
+      
+      // Создаем GainNode для контроля громкости
+      const gainNode = playbackCtx.createGain();
+      gainNode.gain.value = 1.0; // Полная громкость
+      
+      // Подключаем цепочку: source -> gain -> analyser -> destination
+      source.connect(gainNode);
+      gainNode.connect(analyserNodeRef.current);
+      analyserNodeRef.current.connect(playbackCtx.destination);
+      
+      // Запускаем анимацию при начале воспроизведения
+      isAudioPlayingRef.current = true;
+      startAudioWaveAnimation();
+      
+      source.onended = () => {
+        console.log('✅ Audio chunk playback ended');
+        // Если очередь пуста, останавливаем анимацию
+        if (audioQueueRef.current.length === 0) {
+          isAudioPlayingRef.current = false;
+          stopAudioWaveAnimation(500); // Плавная остановка через 500мс
+        }
+        playNextAudio();
+      };
+      
+      source.start(0);
+      console.log(`🔊 Audio playback started! State: ${playbackCtx.state}, Duration: ${audioBuffer.duration.toFixed(2)}s`);
      } catch (error) {
        console.error('❌ Audio playback error:', error);
        playNextAudio();
@@ -577,13 +690,6 @@ export const VoiceCall: React.FC<VoiceCallProps> = ({
           </span>
         </div>
 
-        {callState !== 'idle' && (
-          <div className="text-xs font-medium px-2 py-1 rounded-full bg-primary/10 text-primary animate-pulse">
-            {callState === 'active' && '🎤 Говорите'}
-            {callState === 'listening' && '👂 Слушаю...'}
-            {callState === 'speaking' && '🗣️ AI отвечает'}
-          </div>
-        )}
       </div>
 
       {/* Main Controls - simplified */}
@@ -613,19 +719,28 @@ export const VoiceCall: React.FC<VoiceCallProps> = ({
             <div className="flex-1 h-12 bg-secondary/50 rounded-full flex items-center px-4 overflow-hidden">
               <div className="flex-1 overflow-hidden">
                 {callState === 'speaking' ? (
-                  <div className="flex gap-1 items-center justify-center">
-                    <div className="w-1 h-4 bg-primary/50 rounded-full animate-wave" />
-                    <div className="w-1 h-6 bg-primary/50 rounded-full animate-wave [animation-delay:0.1s]" />
-                    <div className="w-1 h-8 bg-primary/50 rounded-full animate-wave [animation-delay:0.2s]" />
-                    <div className="w-1 h-6 bg-primary/50 rounded-full animate-wave [animation-delay:0.3s]" />
-                    <div className="w-1 h-4 bg-primary/50 rounded-full animate-wave [animation-delay:0.4s]" />
+                  <div className="flex gap-1 items-center justify-center h-8">
+                    {audioLevels.map((level, index) => {
+                      // Вычисляем высоту на основе уровня (от 8px до 32px)
+                      const height = 8 + level * 24;
+                      // Базовые задержки для плавной анимации
+                      const delay = index * 0.1;
+                      return (
+                        <div
+                          key={index}
+                          className="w-1 bg-primary/70 rounded-full transition-all duration-100 ease-out"
+                          style={{
+                            height: `${height}px`,
+                            minHeight: '8px',
+                            maxHeight: '32px',
+                            animationDelay: `${delay}s`,
+                          }}
+                        />
+                      );
+                    })}
                   </div>
-                ) : partialTranscript ? (
-                  <p className="text-sm text-foreground truncate italic">
-                    {partialTranscript}
-                  </p>
                 ) : (
-                  <div className="flex gap-1 items-center justify-center opacity-30">
+                  <div className="flex gap-1 items-center justify-center opacity-30 h-8">
                     <div className="w-1 h-4 bg-primary/50 rounded-full" />
                     <div className="w-1 h-6 bg-primary/50 rounded-full" />
                     <div className="w-1 h-8 bg-primary/50 rounded-full" />
