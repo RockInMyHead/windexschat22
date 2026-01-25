@@ -403,14 +403,14 @@ class LocalTTSClient {
 
       // Silero TTS Service возвращает WAV файл напрямую
       const audioBlob = await response.blob();
-      const audioUrl = URL.createObjectURL(audioBlob);
+        const audioUrl = URL.createObjectURL(audioBlob);
 
       console.log('✅ Silero TTS: сгенерирована речь, размер:', audioBlob.size, 'байт');
 
-      return {
-        audioUrl,
-        duration: undefined
-      };
+        return {
+          audioUrl,
+          duration: undefined
+        };
     } catch (error) {
       console.error('❌ Silero TTS error:', error);
       throw error;

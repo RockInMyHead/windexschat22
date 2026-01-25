@@ -249,28 +249,28 @@ export function ChatSidebar({ onSelectChat, currentSessionId, refreshTrigger, on
                       ) : (
                         // Обычный режим
                         <>
-                          <SidebarMenuButton
+                      <SidebarMenuButton
                             onDoubleClick={(e) => {
                               if (!collapsed) {
                                 e.stopPropagation();
                                 handleStartEdit(session.id!, session.title);
                               }
                             }}
-                            onClick={() => handleChatClick(session.id!)}
-                            className={`hover:bg-muted/50 flex items-center gap-2 w-full ${
-                              currentSessionId === session.id ? 'bg-muted text-primary' : ''
-                            }`}
-                          >
-                            <MessageSquare className="h-4 w-4 shrink-0" />
-                            {!collapsed && (
-                              <div className="flex-1 overflow-hidden">
-                                <p className="text-sm truncate">{session.title}</p>
-                                <p className="text-xs text-muted-foreground">
-                                  {formatDate(session.updated_at)}
-                                </p>
-                              </div>
-                            )}
-                          </SidebarMenuButton>
+                        onClick={() => handleChatClick(session.id!)}
+                        className={`hover:bg-muted/50 flex items-center gap-2 w-full ${
+                          currentSessionId === session.id ? 'bg-muted text-primary' : ''
+                        }`}
+                      >
+                        <MessageSquare className="h-4 w-4 shrink-0" />
+                        {!collapsed && (
+                          <div className="flex-1 overflow-hidden">
+                            <p className="text-sm truncate">{session.title}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {formatDate(session.updated_at)}
+                            </p>
+                          </div>
+                        )}
+                      </SidebarMenuButton>
 
                           {!collapsed && (
                             <>
@@ -297,16 +297,16 @@ export function ChatSidebar({ onSelectChat, currentSessionId, refreshTrigger, on
                             </>
                           )}
                           {collapsed && (
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleDeleteChat(session.id!, session.title);
-                              }}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteChat(session.id!, session.title);
+                        }}
                               className="absolute -right-1 top-1/2 -translate-y-1/2 p-1 rounded-md opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive transition-all duration-200"
-                              title="Удалить чат"
-                            >
+                        title="Удалить чат"
+                      >
                               <Trash2 className="h-3 w-3" />
-                            </button>
+                      </button>
                           )}
                         </>
                       )}

@@ -2,9 +2,36 @@
 
 # 🎙️ WindexsAI Voice Backend Startup Script
 
-PROJECT_DIR="/Users/artembutko/Desktop/WindexsChat2.0mainкопия/voice-backend"
+# Detect project directory
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$PROJECT_DIR"
+
+# Load LLM configuration from main .env if available
+if [ -f "../.env" ]; then
+    # Load DEEPSEEK_API_KEY as LLM_API_KEY
+    export LLM_API_KEY=$(grep '^DEEPSEEK_API_KEY=' ../.env | cut -d '=' -f2)
+    if [ -z "$LLM_API_KEY" ]; then
+        export LLM_API_KEY=$(grep '^OPENAI_API_KEY=' ../.env | cut -d '=' -f2)
+    fi
+    
+    # Load LLM configuration (with defaults if not set)
+    export LLM_PROVIDER=$(grep '^LLM_PROVIDER=' ../.env | cut -d '=' -f2 || echo "deepseek")
+    export LLM_BASE_URL=$(grep '^LLM_BASE_URL=' ../.env | cut -d '=' -f2 || echo "https://api.deepseek.com")
+    export LLM_MODEL=$(grep '^LLM_MODEL=' ../.env | cut -d '=' -f2 || echo "deepseek-chat")
+    
+    echo "🔑 Loaded LLM configuration from ../.env"
+    echo "   LLM_PROVIDER: ${LLM_PROVIDER:-not set}"
+    echo "   LLM_BASE_URL: ${LLM_BASE_URL:-not set}"
+    echo "   LLM_MODEL: ${LLM_MODEL:-not set}"
+    echo "   LLM_API_KEY: ${LLM_API_KEY:+set (${#LLM_API_KEY} chars)}"
+fi
+
+if [ -z "$LLM_API_KEY" ]; then
+    echo "⚠️  LLM_API_KEY not found in environment or ../.env"
+fi
 
 echo "🚀 Starting WindexsAI Voice Backend..."
+echo "📍 Directory: $PROJECT_DIR"
 echo ""
 
 # Check if Vosk model exists
@@ -42,6 +69,7 @@ echo ""
 
 # Start Voice Runtime (Unified STT + LLM + TTS)
 echo "🎤 Starting Unified Voice Runtime (port 2700)..."
+mkdir -p "$PROJECT_DIR/logs"
 cd "$PROJECT_DIR/stt"
 python3 server_fixed.py > ../logs/stt.log 2>&1 &
 STT_PID=$!

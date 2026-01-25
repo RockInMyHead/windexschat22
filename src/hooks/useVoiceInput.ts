@@ -265,6 +265,13 @@ export const useVoiceInput = ({
       return false;
     }
 
+    // Check if mediaDevices API is available
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      console.error("🎤 MediaDevices API is not available");
+      onErrorRef.current?.("not-allowed", "Доступ к микрофону недоступен. Используйте HTTPS или другой браузер.");
+      return false;
+    }
+
     // Запрашиваем разрешение на микрофон перед запуском
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });

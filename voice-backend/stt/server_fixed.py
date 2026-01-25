@@ -78,7 +78,13 @@ from agents import AGENTS
 import tts_silero
 
 # Загрузка переменных окружения из .env файла
-load_dotenv()
+# Сначала пытаемся загрузить из корня проекта (../../.env), затем из текущей директории
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ROOT = os.path.dirname(BASE_DIR)
+if os.path.exists(os.path.join(PROJECT_ROOT, ".env")):
+    load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+else:
+    load_dotenv()  # Fallback на текущую директорию
 
 # Настройка логирования
 logger = logging.getLogger("ws")
@@ -152,7 +158,9 @@ async def push_event_to_voice_control(session_id: str, event_payload: dict):
 
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "2700"))
-MODEL_PATH = os.getenv("MODEL_PATH", "/Users/artembutko/Desktop/VS/models/vosk-model-small-ru-0.22")
+# Настройка путей
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MODEL_PATH = os.getenv("MODEL_PATH", os.path.join(BASE_DIR, "models", "vosk-model-small-ru-0.22"))
 DEFAULT_SAMPLE_RATE = int(os.getenv("SAMPLE_RATE", "16000"))
 
 # LLM API configuration (OpenAI by default)
@@ -166,6 +174,9 @@ OPENAI_BASE_URL = LLM_BASE_URL  # Для совместимости с кодо�
 OPENAI_API_KEY = LLM_API_KEY  # Для совместимости с кодом
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-3.5-turbo")
 OPENAI_MODEL = LLM_MODEL  # Для совместимости с кодом
+
+# Log LLM configuration for debugging
+logger.info(f"🔧 LLM Configuration: provider={LLM_PROVIDER}, base_url={LLM_BASE_URL}, model={LLM_MODEL}, api_key={'*' * 10 if LLM_API_KEY else 'NOT SET'}")
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "160"))
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.3"))
 
@@ -882,10 +893,11 @@ class TTSBackend:
                     }, timeout=5.0)
                     r.raise_for_status()
                     return r.content
+                else:
+                    raise RuntimeError("TTS HTTP client not initialized")
             except Exception as http_e:
                 print(f"[TTS] HTTP fallback also failed: {http_e}")
                 raise RuntimeError(f"TTS synthesis failed (direct: {e}, HTTP: {http_e})")
-            raise RuntimeError(f"TTS synthesis failed: {e}")
 
 
 async def decode_accept(rec: KaldiRecognizer, chunk: bytes) -> bool:

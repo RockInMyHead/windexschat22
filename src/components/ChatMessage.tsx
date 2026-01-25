@@ -955,12 +955,12 @@ const renderClickableText = (
         );
       } else {
         // Для пробелов и знаков препинания без букв - обычный span
-        nodes.push(
-          <span key={`${key}-segment-${segmentKey++}`}>
-            {segment}
-          </span>
-        );
-      }
+      nodes.push(
+        <span key={`${key}-segment-${segmentKey++}`}>
+          {segment}
+        </span>
+      );
+    }
     }
   });
 
@@ -1279,7 +1279,7 @@ const renderTooltipMarkdown = (text: string): React.ReactNode => {
 
   // Очищаем markdown символы из текста
   const cleanText = cleanMarkdownFromText(text);
-  
+
   // Разбиваем на строки для корректного отображения
   const lines = cleanText.split('\n').filter(line => line.trim());
   
@@ -1427,41 +1427,41 @@ const WordTooltip = ({
   // Убрано автозакрытие - tooltip закрывается только по кнопке ✕
 
   return (
-      <div
+    <div
         className="fixed z-50 bg-background border border-border rounded-lg shadow-lg p-3 max-w-xs max-h-[500px] flex flex-col"
         data-word-tooltip="true"
-        style={{
-          left: position.x,
-          top: position.y,
-          transform: 'translate(-50%, -100%)',
+      style={{
+        left: position.x,
+        top: position.y,
+        transform: 'translate(-50%, -100%)',
           filter: 'none',
-        }}
-        onMouseEnter={() => setIsHovered(true)}
-        onMouseLeave={() => setIsHovered(false)}
-      >
+      }}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+    >
         {/* Заголовок */}
         <div className="flex items-center justify-between mb-2 shrink-0">
-          <span className="font-semibold text-primary text-sm">"{word}"</span>
-          <button
-            onClick={onClose}
-            className="text-muted-foreground hover:text-foreground ml-2 text-xs"
-            title="Закрыть"
-          >
-            ✕
-          </button>
-        </div>
+        <span className="font-semibold text-primary text-sm">"{word}"</span>
+        <button
+          onClick={onClose}
+          className="text-muted-foreground hover:text-foreground ml-2 text-xs"
+          title="Закрыть"
+        >
+          ✕
+        </button>
+      </div>
         
         {/* Область с описанием и ответом LLM - с прокруткой */}
         <div className="flex-1 overflow-y-auto min-h-0 mb-3">
           <div className="text-sm text-muted-foreground leading-relaxed mb-3">
-            {description === 'Загрузка...' ? (
-              <span className="flex items-center gap-2">
-                <div className="animate-spin rounded-full h-3 w-3 border border-primary border-t-transparent" />
-                {description}
-              </span>
-            ) : (
-              renderTooltipMarkdown(description)
-            )}
+        {description === 'Загрузка...' ? (
+          <span className="flex items-center gap-2">
+            <div className="animate-spin rounded-full h-3 w-3 border border-primary border-t-transparent" />
+            {description}
+          </span>
+        ) : (
+          renderTooltipMarkdown(description)
+        )}
           </div>
           
           {/* Ответ от LLM */}
@@ -1517,8 +1517,8 @@ const WordTooltip = ({
               )}
             </Button>
           </div>
-        </div>
       </div>
+    </div>
   );
 };
 
@@ -1977,7 +1977,7 @@ const ChatMessage = ({ message, selectedModel, onMessageDelete, onMessageEdit }:
           if (!chunk.trim()) return;
           
           console.log(`🎤 Generating audio for chunk ${index + 1}/${chunks.length}: "${chunk.substring(0, 30)}..."`);
-          
+
           // Определяем язык для каждого чанка отдельно
           const chunkLang = detectChunkLanguage(chunk);
           const result = chunkLang === 'ru'
@@ -2010,12 +2010,12 @@ const ChatMessage = ({ message, selectedModel, onMessageDelete, onMessageEdit }:
           if (index === chunks.length - 1) {
             source.onended = () => {
               console.log('✅ All audio playback completed');
-              setIsPlayingAudio(false);
+        setIsPlayingAudio(false);
               audioQueue.forEach(s => s.disconnect());
             };
           }
 
-        } catch (error) {
+    } catch (error) {
           console.error(`❌ Failed to generate audio for chunk ${index + 1}:`, error);
         }
       };

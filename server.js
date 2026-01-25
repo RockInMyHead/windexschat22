@@ -226,6 +226,8 @@ app.use(cors({
       "http://www.ai.windexs.ru",
       "https://chat.tartihome.online",
       "http://chat.tartihome.online",
+      "https://testchat.tartihome.ru",
+      "http://testchat.tartihome.ru",
       "http://95.174.92.221",
       "https://95.174.92.221",
       "http://127.0.0.1:8081",
@@ -268,6 +270,14 @@ if (isProd) {
   app.set("trust proxy", 1);
 }
 
+// Определяем, используется ли HTTPS (через заголовок от Nginx)
+// Nginx передает X-Forwarded-Proto: https при HTTPS соединении
+app.use((req, res, next) => {
+  // Устанавливаем secure cookie только если запрос идет через HTTPS
+  req.isHTTPS = req.protocol === 'https' || req.get('X-Forwarded-Proto') === 'https';
+  next();
+});
+
 app.use(session({
   name: "sid",
   secret: process.env.SESSION_SECRET || "dev_secret_change_me",
@@ -279,8 +289,10 @@ app.use(session({
   }),
   cookie: {
     httpOnly: true,
-    secure: isProd || process.env.FORCE_HTTPS === 'true',  // true в prod или принудительно для ngrok
-    sameSite: isProd ? "none" : (process.env.FORCE_HTTPS === 'true' ? "none" : "lax"),  // none для кросс-ориджин (ngrok)
+    // secure: true для HTTPS, false для HTTP
+    // Определяем динамически через middleware выше
+    secure: process.env.FORCE_HTTPS === 'true',  // По умолчанию false, но можно принудительно включить
+    sameSite: "lax",  // lax работает и для HTTP и для HTTPS
     maxAge: 1000 * 60 * 60 * 24 * 7,
   },
 }));
@@ -1027,18 +1039,17 @@ app.post('/api/users/current', (req, res) => {
 
     console.log('✅ User response prepared:', responseUser.id, responseUser.email);
 
-    // Сохраняем userId в сессии
+    // Устанавливаем сессию для пользователя и отправляем ответ только после сохранения
     req.session.userId = user.id;
-
-    try {
-      // Синхронное сохранение сессии (express-session поддерживает это)
-      req.session.save();
+    console.log('🔐 Setting session userId:', user.id, 'sessionId:', req.session?.id);
+    req.session.save((err) => {
+      if (err) {
+        console.error('❌ Session save error:', err);
+        return res.status(500).json({ error: 'Session save failed' });
+      }
       console.log('✅ Session saved for user:', user.id);
       res.json(responseUser);
-    } catch (err) {
-      console.error("❌ session save failed:", err);
-      return res.status(500).json({ error: "Failed to persist session" });
-    }
+    });
   } catch (error) {
     console.error('❌ Get current user error:', error);
     console.error('❌ Error stack:', error.stack);

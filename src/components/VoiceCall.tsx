@@ -16,7 +16,9 @@ type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
 type CallState = 'idle' | 'active' | 'speaking' | 'listening';
 
 export const VoiceCall: React.FC<VoiceCallProps> = ({
-  wsUrl = 'ws://127.0.0.1:2700',
+  wsUrl = window.location.protocol === 'https:' 
+    ? `wss://${window.location.hostname}/ws-voice/`
+    : `ws://${window.location.hostname}:2700`,
   onTranscript,
   onLLMResponse,
   className,
@@ -50,10 +52,29 @@ export const VoiceCall: React.FC<VoiceCallProps> = ({
   const ttsChunkCountRef = useRef(0);
   const isTTSActiveRef = useRef(false);
   const [audioLevels, setAudioLevels] = useState<number[]>([0.3, 0.5, 0.7, 0.5, 0.3]);
+  const [isMediaDevicesSupported, setIsMediaDevicesSupported] = useState<boolean | null>(null);
   const audioLevelsIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const stopAnimationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const analyserNodeRef = useRef<AnalyserNode | null>(null);
   const isAudioPlayingRef = useRef(false);
+
+  // Check MediaDevices API availability on mount
+  useEffect(() => {
+    const checkMediaDevices = () => {
+      const isSupported = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+      setIsMediaDevicesSupported(isSupported);
+      if (!isSupported) {
+        const isHttp = window.location.protocol === 'http:';
+        const hostname = window.location.hostname;
+        if (isHttp && hostname !== 'localhost' && !hostname.startsWith('127.0.0.1')) {
+          setError(`⚠️ Голосовой ввод недоступен на HTTP.\n\nДля работы требуется HTTPS.\nИспользуйте: https://chat.tartihome.online\n\nИли настройте chrome://flags для тестирования.`);
+        } else {
+          setError('Голосовой ввод недоступен в этом браузере.');
+        }
+      }
+    };
+    checkMediaDevices();
+  }, []);
 
   // Sync ref with state
   useEffect(() => {
@@ -338,12 +359,12 @@ export const VoiceCall: React.FC<VoiceCallProps> = ({
 
      const playbackCtx = playbackAudioContextRef.current;
 
-    if (audioQueueRef.current.length === 0) {
-      isPlayingRef.current = false;
+     if (audioQueueRef.current.length === 0) {
+       isPlayingRef.current = false;
       isAudioPlayingRef.current = false;
       stopAudioWaveAnimation(500); // Плавная остановка анимации
-      return;
-    }
+       return;
+     }
  
      isPlayingRef.current = true;
      const wavBytes = audioQueueRef.current.shift()!;
@@ -375,8 +396,8 @@ export const VoiceCall: React.FC<VoiceCallProps> = ({
        const audioBuffer = await playbackCtx.decodeAudioData(audioData as ArrayBuffer);
        console.log(`✅ Audio decoded: ${audioBuffer.duration.toFixed(2)}s, ${audioBuffer.numberOfChannels} channels, ${audioBuffer.sampleRate}Hz`);
        
-      const source = playbackCtx.createBufferSource();
-      source.buffer = audioBuffer;
+       const source = playbackCtx.createBufferSource();
+       source.buffer = audioBuffer;
       
       // Создаем AnalyserNode для анализа аудио в реальном времени
       // Важно: создаем в том же AudioContext, что и source
@@ -386,32 +407,32 @@ export const VoiceCall: React.FC<VoiceCallProps> = ({
         analyserNodeRef.current.fftSize = 256; // Размер FFT для анализа
         analyserNodeRef.current.smoothingTimeConstant = 0.8; // Сглаживание для плавной анимации
       }
-      
-      // Создаем GainNode для контроля громкости
-      const gainNode = playbackCtx.createGain();
-      gainNode.gain.value = 1.0; // Полная громкость
+       
+       // Создаем GainNode для контроля громкости
+       const gainNode = playbackCtx.createGain();
+       gainNode.gain.value = 1.0; // Полная громкость
       
       // Подключаем цепочку: source -> gain -> analyser -> destination
-      source.connect(gainNode);
+       source.connect(gainNode);
       gainNode.connect(analyserNodeRef.current);
       analyserNodeRef.current.connect(playbackCtx.destination);
       
       // Запускаем анимацию при начале воспроизведения
       isAudioPlayingRef.current = true;
       startAudioWaveAnimation();
-      
-      source.onended = () => {
-        console.log('✅ Audio chunk playback ended');
+       
+       source.onended = () => {
+         console.log('✅ Audio chunk playback ended');
         // Если очередь пуста, останавливаем анимацию
         if (audioQueueRef.current.length === 0) {
           isAudioPlayingRef.current = false;
           stopAudioWaveAnimation(500); // Плавная остановка через 500мс
         }
-        playNextAudio();
-      };
-      
-      source.start(0);
-      console.log(`🔊 Audio playback started! State: ${playbackCtx.state}, Duration: ${audioBuffer.duration.toFixed(2)}s`);
+         playNextAudio();
+       };
+ 
+       source.start(0);
+       console.log(`🔊 Audio playback started! State: ${playbackCtx.state}, Duration: ${audioBuffer.duration.toFixed(2)}s`);
      } catch (error) {
        console.error('❌ Audio playback error:', error);
        playNextAudio();
@@ -521,6 +542,11 @@ export const VoiceCall: React.FC<VoiceCallProps> = ({
         }
       }
 
+      // Check if mediaDevices API is available
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('MediaDevices API is not available. Please use HTTPS or a browser that supports microphone access.');
+      }
+
       // Get microphone access
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -601,9 +627,25 @@ export const VoiceCall: React.FC<VoiceCallProps> = ({
       console.log('✅ Voice call started');
       console.log('🎤 Microphone stream active, worklet connected');
       console.log(`📊 Stream settings: ${stream.getAudioTracks()[0]?.getSettings()?.sampleRate}Hz`);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to start call:', error);
-      setError('Не удалось запустить голосовой звонок. Проверьте доступ к микрофону.');
+      let errorMessage = 'Не удалось запустить голосовой звонок.';
+      
+      if (error?.message?.includes('MediaDevices API')) {
+        const isHttp = window.location.protocol === 'http:';
+        const hostname = window.location.hostname;
+        errorMessage = isHttp 
+          ? `⚠️ Для работы голосового ввода требуется HTTPS.\n\nИспользуйте домен с SSL:\nhttps://chat.tartihome.online\n\nИли настройте HTTPS для ${hostname}`
+          : 'Доступ к микрофону недоступен. Используйте браузер с поддержкой MediaDevices API.';
+      } else if (error?.name === 'NotAllowedError' || error?.name === 'PermissionDeniedError') {
+        errorMessage = 'Доступ к микрофону запрещен. Разрешите доступ в настройках браузера.';
+      } else if (error?.name === 'NotFoundError' || error?.name === 'DevicesNotFoundError') {
+        errorMessage = 'Микрофон не найден. Убедитесь, что микрофон подключен.';
+      } else if (error?.message) {
+        errorMessage = `Ошибка: ${error.message}`;
+      }
+      
+      setError(errorMessage);
     } finally {
       isStartingRef.current = false;
     }
@@ -694,11 +736,20 @@ export const VoiceCall: React.FC<VoiceCallProps> = ({
 
       {/* Main Controls - simplified */}
       <div className="flex items-center justify-center gap-3">
-        {callState === 'idle' ? (
+        {isMediaDevicesSupported === false ? (
+          <div className="w-full text-center p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+            <p className="text-sm text-yellow-800">
+              Голосовой ввод недоступен на HTTP
+            </p>
+            <p className="text-xs text-yellow-600 mt-1">
+              Используйте HTTPS для доступа к микрофону
+            </p>
+          </div>
+        ) : callState === 'idle' ? (
           <Button
             size="lg"
             onClick={startCall}
-            disabled={connectionState === 'connecting'}
+            disabled={connectionState === 'connecting' || isMediaDevicesSupported === false}
             className="rounded-full w-full py-6 gap-3 text-lg font-semibold shadow-md hover:shadow-lg transition-all"
           >
             <Phone className="w-6 h-6" />
@@ -775,7 +826,7 @@ export const VoiceCall: React.FC<VoiceCallProps> = ({
       </div>
 
       {error && (
-        <div className="text-xs text-red-500 text-center bg-red-50 p-2 rounded border border-red-100">
+        <div className="text-xs text-red-500 text-center bg-red-50 p-3 rounded border border-red-100 whitespace-pre-line">
           {error}
         </div>
       )}

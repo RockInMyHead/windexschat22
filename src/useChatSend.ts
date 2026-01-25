@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { sendChatMessage, type PlanStep, type TokenCost, detectWebsiteIntent, generateWebsiteArtifact } from '@/lib/openai';
 import { apiClient, type Message, type Artifact } from '@/lib/api';
 import { type MarketQuote, type MarketChart } from '@/lib/market';
+import { generateId } from './utils';
 
 // Throttling utility for streaming updates
 const throttle = <T extends any[]>(func: (...args: T) => void, delay: number) => {
@@ -592,7 +593,7 @@ export const useChatSend = ({
           await apiClient.saveMessage(sid, "user", messageText, lastArtifactId);
 
           // requestId для идемпотентности
-          const editRequestId = crypto.randomUUID();
+          const editRequestId = generateId();
 
           // Вызываем endpoint редактирования
           const { artifact, assistantText } = await apiClient.editWebsiteArtifact(
@@ -677,7 +678,7 @@ export const useChatSend = ({
       }
 
       // Генерируем requestId для защиты от двойных списаний
-      const requestId = crypto.randomUUID();
+      const requestId = generateId();
 
       console.log('About to call sendChatMessage with messages:', allMessages.length, 'requestId:', requestId);
       const returnedAssistantText = await sendChatMessage(

@@ -1,13 +1,13 @@
 #!/bin/bash
 
 # WindexsAI Chat - Automatic Server Deployment Script
-# Target server: 176.109.111.72 (user1)
+# Target server: 95.174.92.221 (user1)
 # Domain: https://chat.tartihome.online
 
 set -e
 
 # Configuration
-SERVER_IP="176.109.111.72"
+SERVER_IP="95.174.92.221"
 SERVER_USER="user1"
 SERVER_PATH="/home/user1/windexs-ai"
 DOMAIN="chat.tartihome.online"
@@ -84,6 +84,7 @@ tar -czf "$DEPLOY_ARCHIVE" \
     ecosystem.config.cjs \
     nginx-config/ \
     mcp-server/ \
+    voice-backend/ \
     src/ \
     init-db.js
 
