@@ -578,11 +578,18 @@ export const VoiceCall: React.FC<VoiceCallProps> = ({
       // Load AudioWorklet with error handling
       try {
         console.log('📦 Loading AudioWorklet module...');
-        await audioContext.audioWorklet.addModule('/audioWorklet.js');
+        // Use unique URL to bypass cache
+        await audioContext.audioWorklet.addModule(`/audioWorklet.js?v=${Date.now()}`);
         console.log('✅ AudioWorklet module loaded successfully');
         
+        // Ensure AudioContext is running before creating nodes
+        if (audioContext.state === 'suspended') {
+          await audioContext.resume();
+          console.log('✅ AudioContext resumed');
+        }
+        
         // Small delay to ensure processor is registered
-        await new Promise(resolve => setTimeout(resolve, 50));
+        await new Promise(resolve => setTimeout(resolve, 100));
         
         console.log('🔧 Creating AudioWorkletNode...');
         const workletNode = new AudioWorkletNode(audioContext, 'pcm-processor');
