@@ -356,7 +356,7 @@ export const useVoiceInput = ({
                 try {
                   const newAppleRec = new (window as any).webkitSpeechRecognition();
                   newAppleRec.continuous = false;
-                  newAppleRec.interimResults = false;
+                  newAppleRec.interimResults = true; // Включаем промежуточные результаты для быстрого отображения
                   newAppleRec.lang = lang;
                   
                   newAppleRec.onstart = () => {
