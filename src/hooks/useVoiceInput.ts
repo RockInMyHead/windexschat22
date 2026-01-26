@@ -333,20 +333,42 @@ export const useVoiceInput = ({
                   newAppleRec.onerror = (event: any) => {
                     const code = event.error;
                     console.error("🎤 Apple/Safari: Recognition error (restart):", code, event);
+                    // Если это была ручная остановка (aborted), отправляем накопленный транскрипт
+                    if (code === 'aborted' && stopRequestedRef.current && lastTranscriptRef.current.trim()) {
+                      console.log("🎤 Apple/Safari: Sending accumulated transcript on manual stop (error aborted):", lastTranscriptRef.current.trim());
+                      onTranscriptRef.current?.(lastTranscriptRef.current.trim());
+                      hardResetFlags();
+                      return;
+                    }
                     if (code !== 'aborted' && !stopRequestedRef.current) {
                       hardResetFlags();
                       onErrorRef.current?.(code, "Сбой диктовки Apple. Попробуйте еще раз.");
+                    } else if (code === 'aborted' && stopRequestedRef.current) {
+                      // Если это aborted при ручной остановке, просто сбрасываем флаги
+                      hardResetFlags();
                     }
                   };
                   
                   newAppleRec.onend = () => {
-                    console.log("🎤 Apple/Safari: Recognition ended (restart)");
+                    console.log("🎤 Apple/Safari: Recognition ended (restart)", { stopRequested: stopRequestedRef.current, isRecording: isRecordingRef.current });
+                    // Если была остановка вручную, отправляем накопленный транскрипт
+                    if (stopRequestedRef.current && lastTranscriptRef.current.trim()) {
+                      console.log("🎤 Apple/Safari: Sending accumulated transcript on manual stop (restart):", lastTranscriptRef.current.trim());
+                      onTranscriptRef.current?.(lastTranscriptRef.current.trim());
+                      hardResetFlags();
+                      return;
+                    }
                     // Рекурсивно перезапускаем, если не была остановка вручную
                     if (!stopRequestedRef.current && isRecordingRef.current) {
                       setTimeout(() => {
                         if (!stopRequestedRef.current && isRecordingRef.current) {
                           newAppleRec.start();
                         } else {
+                          // Если флаг изменился во время задержки, отправляем транскрипт
+                          if (stopRequestedRef.current && lastTranscriptRef.current.trim()) {
+                            console.log("🎤 Apple/Safari: Sending accumulated transcript on manual stop (delayed):", lastTranscriptRef.current.trim());
+                            onTranscriptRef.current?.(lastTranscriptRef.current.trim());
+                          }
                           hardResetFlags();
                         }
                       }, 100);
@@ -381,7 +403,7 @@ export const useVoiceInput = ({
               console.log("🎤 Apple/Safari: Sending accumulated transcript on manual stop:", lastTranscriptRef.current.trim());
               onTranscriptRef.current?.(lastTranscriptRef.current.trim());
             }
-            hardResetFlags();
+          hardResetFlags();
           }
         };
 
