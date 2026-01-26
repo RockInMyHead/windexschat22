@@ -811,7 +811,7 @@ const Chat = () => {
                       onClick={() => setInput("Расскажи о себе")}
                       className="text-xs"
                     >
-                      📖 О проекте
+                      О проекте
                     </Button>
                     <Button
                       variant="outline"
@@ -819,7 +819,7 @@ const Chat = () => {
                       onClick={() => setInput("Какие у тебя возможности?")}
                       className="text-xs"
                     >
-                      ⚡ Возможности
+                      Возможности
                     </Button>
                     <Button
                       variant="outline"
@@ -827,7 +827,7 @@ const Chat = () => {
                       onClick={() => setInput("Создай простой веб-сайт с формой контактов")}
                       className="text-xs"
                     >
-                      🌐 Создать сайт
+                      Создать сайт
                     </Button>
                     <Button
                       variant="outline"
@@ -836,7 +836,7 @@ const Chat = () => {
                       className="text-xs gap-2"
                     >
                       <Phone className="w-3 h-3" />
-                      🎙️ Голосовой звонок
+                      Голосовой звонок
                     </Button>
                   </div>
                 </div>
