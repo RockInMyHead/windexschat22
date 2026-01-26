@@ -99,6 +99,7 @@ export const useVoiceInput = ({
   const isStartingRef = useRef(false);
   const stopRequestedRef = useRef(false);
   const ignoreErrorsRef = useRef(false);
+  const isRecordingRef = useRef(false); // Ref для отслеживания состояния записи
 
   // callbacks через refs (чтобы НЕ пересоздавать recognition при каждом рендере)
   const onTranscriptRef = useRef<typeof onTranscript>(onTranscript);
@@ -132,6 +133,7 @@ export const useVoiceInput = ({
     clearStartTimeout();
     isStartingRef.current = false;
     stopRequestedRef.current = false;
+    isRecordingRef.current = false;
     setIsRecording(false);
   };
 
@@ -159,6 +161,7 @@ export const useVoiceInput = ({
       clearStartTimeout();
       isStartingRef.current = false;
       stopRequestedRef.current = false;
+      isRecordingRef.current = true;
       setIsRecording(true);
     };
 
@@ -292,6 +295,7 @@ export const useVoiceInput = ({
         appleRec.onstart = () => {
           console.log("🎤 Apple/Safari: Recognition started");
           isStartingRef.current = false;
+          isRecordingRef.current = true;
           setIsRecording(true);
           clearStartTimeout();
         };
@@ -306,15 +310,89 @@ export const useVoiceInput = ({
         };
 
         appleRec.onend = () => {
-          console.log("🎤 Apple/Safari: Recognition ended");
-          hardResetFlags();
+          console.log("🎤 Apple/Safari: Recognition ended", { stopRequested: stopRequestedRef.current, isRecording: isRecordingRef.current });
+          // Если запись не была остановлена вручную, перезапускаем для продолжения записи
+          if (!stopRequestedRef.current && isRecordingRef.current) {
+            console.log("🎤 Apple/Safari: Auto-restarting recognition to continue recording");
+            // Небольшая задержка перед перезапуском для стабильности
+            setTimeout(() => {
+              if (!stopRequestedRef.current && isRecordingRef.current) {
+                try {
+                  const newAppleRec = new (window as any).webkitSpeechRecognition();
+                  newAppleRec.continuous = false;
+                  newAppleRec.interimResults = false;
+                  newAppleRec.lang = lang;
+                  
+                  newAppleRec.onstart = () => {
+                    console.log("🎤 Apple/Safari: Recognition restarted");
+                    isRecordingRef.current = true;
+                    setIsRecording(true);
+                    recognitionRef.current = newAppleRec;
+                  };
+                  
+                  newAppleRec.onerror = (event: any) => {
+                    const code = event.error;
+                    console.error("🎤 Apple/Safari: Recognition error (restart):", code, event);
+                    if (code !== 'aborted' && !stopRequestedRef.current) {
+                      hardResetFlags();
+                      onErrorRef.current?.(code, "Сбой диктовки Apple. Попробуйте еще раз.");
+                    }
+                  };
+                  
+                  newAppleRec.onend = () => {
+                    console.log("🎤 Apple/Safari: Recognition ended (restart)");
+                    // Рекурсивно перезапускаем, если не была остановка вручную
+                    if (!stopRequestedRef.current && isRecordingRef.current) {
+                      setTimeout(() => {
+                        if (!stopRequestedRef.current && isRecordingRef.current) {
+                          newAppleRec.start();
+                        } else {
+                          hardResetFlags();
+                        }
+                      }, 100);
+                    } else {
+                      hardResetFlags();
+                    }
+                  };
+                  
+                  newAppleRec.onresult = (event: any) => {
+                    const transcript = event.results[0][0].transcript;
+                    console.log("🎤 Apple/Safari: Result received (restart):", transcript);
+                    if (transcript) {
+                      // Сохраняем транскрипт, но не вызываем onTranscript автоматически
+                      lastTranscriptRef.current = (lastTranscriptRef.current + " " + transcript.trim()).trim();
+                      console.log("🎤 Apple/Safari: Accumulated transcript:", lastTranscriptRef.current);
+                    }
+                  };
+                  
+                  recognitionRef.current = newAppleRec;
+                  newAppleRec.start();
+                } catch (e: any) {
+                  console.error("🎤 Apple/Safari: Failed to restart recognition:", e);
+                  hardResetFlags();
+                }
+              } else {
+                hardResetFlags();
+              }
+            }, 100);
+          } else {
+            // Если была остановка вручную, отправляем накопленный транскрипт
+            if (lastTranscriptRef.current.trim() && stopRequestedRef.current) {
+              console.log("🎤 Apple/Safari: Sending accumulated transcript on manual stop:", lastTranscriptRef.current.trim());
+              onTranscriptRef.current?.(lastTranscriptRef.current.trim());
+            }
+            hardResetFlags();
+          }
         };
 
         appleRec.onresult = (event: any) => {
           const transcript = event.results[0][0].transcript;
           console.log("🎤 Apple/Safari: Result received:", transcript);
           if (transcript) {
-            onTranscriptRef.current?.(transcript.trim());
+            // Сохраняем транскрипт, но не вызываем onTranscript автоматически
+            // onTranscript будет вызван только при явной остановке (stopRequestedRef.current === true)
+            lastTranscriptRef.current = transcript.trim();
+            console.log("🎤 Apple/Safari: Transcript saved:", lastTranscriptRef.current);
           }
         };
 
