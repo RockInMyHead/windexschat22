@@ -66,7 +66,7 @@ const Index = () => {
           </div>
         )}
 
-        <div className="text-center">
+        <div className="text-center" style={{ lineHeight: 0 }}>
           <img 
             src="/logo.png" 
             alt="WindexsAI" 
@@ -75,11 +75,13 @@ const Index = () => {
               maxWidth: 'min(100%, 350px)',
               height: 'auto',
               display: 'block',
-              marginTop: '20px',
-              marginBottom: '20px'
+              margin: '0',
+              padding: '0',
+              verticalAlign: 'top',
+              lineHeight: '1'
             }}
           />
-          <p className="text-lg sm:text-xl md:text-2xl text-foreground/80 px-2 mt-5">
+          <p className="text-lg sm:text-xl md:text-2xl text-foreground/80 px-2 mt-2" style={{ lineHeight: 'normal' }}>
             Я помогу вам <AnimatedText />
           </p>
         </div>
