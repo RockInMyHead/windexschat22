@@ -153,8 +153,8 @@ const Profile = () => {
   };
 
   return (
-    <div className="min-h-screen bg-background">
-      <div className="border-b border-border bg-background sticky top-0 z-10">
+    <div className="h-screen bg-background flex flex-col overflow-hidden">
+      <div className="border-b border-border bg-background flex-shrink-0 z-10">
         <div className="max-w-4xl mx-auto px-3 sm:px-4 py-3 flex items-center gap-2 sm:gap-4">
           <Button
             variant="ghost"
@@ -168,7 +168,8 @@ const Profile = () => {
         </div>
       </div>
 
-      <div className="max-w-4xl mx-auto px-3 sm:px-4 py-4 sm:py-8 space-y-4 sm:space-y-6">
+      <div className="flex-1 overflow-y-auto -webkit-overflow-scrolling-touch">
+        <div className="max-w-4xl mx-auto px-3 sm:px-4 py-4 sm:py-8 space-y-4 sm:space-y-6 pb-8">
         <Card className="border-border">
           <CardHeader>
             <div className="flex items-center gap-3">
@@ -476,6 +477,7 @@ const Profile = () => {
             </div>
           </DialogContent>
         </Dialog>
+        </div>
       </div>
     </div>
   );

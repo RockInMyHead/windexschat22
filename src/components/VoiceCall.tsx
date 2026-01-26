@@ -273,6 +273,8 @@ export const VoiceCall: React.FC<VoiceCallProps> = ({
         isLLMRespondingRef.current = false;
         console.error('LLM error:', message.error);
         setCallState('active');
+        // Уведомляем родительский компонент об ошибке, чтобы удалить незавершенное сообщение
+        onLLMResponse?.('', false, true); // isEnd = true, чтобы очистить состояние
         break;
 
       case 'abort':
@@ -341,21 +343,23 @@ export const VoiceCall: React.FC<VoiceCallProps> = ({
     }
   }, [onTranscript, onLLMResponse]);
 
-   /**
-    * Play audio chunk using AudioContext for better reliability
-    */
-   const playNextAudio = useCallback(async () => {
-     // Создаем отдельный AudioContext для воспроизведения, если его нет
-     if (!playbackAudioContextRef.current) {
-       try {
-         playbackAudioContextRef.current = new AudioContext({ sampleRate: 16000 });
-         console.log('✅ Created playback AudioContext');
-       } catch (error) {
-         console.error('❌ Failed to create playback AudioContext:', error);
-         isPlayingRef.current = false;
-         return;
-       }
-     }
+  /**
+   * Play audio chunk using AudioContext for better reliability
+   */
+  const playNextAudio = useCallback(async () => {
+    // Создаем отдельный AudioContext для воспроизведения, если его нет
+    if (!playbackAudioContextRef.current) {
+      try {
+        // Используем нативный sample rate устройства для лучшего качества на iPhone
+        const nativeSampleRate = new AudioContext().sampleRate;
+        playbackAudioContextRef.current = new AudioContext({ sampleRate: nativeSampleRate });
+        console.log(`✅ Created playback AudioContext with native sample rate: ${nativeSampleRate}Hz`);
+      } catch (error) {
+        console.error('❌ Failed to create playback AudioContext:', error);
+        isPlayingRef.current = false;
+        return;
+      }
+    }
 
      const playbackCtx = playbackAudioContextRef.current;
 
@@ -378,11 +382,14 @@ export const VoiceCall: React.FC<VoiceCallProps> = ({
          console.log(`✅ Resumed playback AudioContext, new state: ${playbackCtx.state}`);
        }
 
-       if (playbackCtx.state === 'closed') {
-         console.error('❌ Playback AudioContext is closed, recreating...');
-         playbackAudioContextRef.current = new AudioContext({ sampleRate: 16000 });
-         return playNextAudio();
-       }
+      if (playbackCtx.state === 'closed') {
+        console.error('❌ Playback AudioContext is closed, recreating...');
+        // Используем нативный sample rate устройства для лучшего качества на iPhone
+        const nativeSampleRate = new AudioContext().sampleRate;
+        playbackAudioContextRef.current = new AudioContext({ sampleRate: nativeSampleRate });
+        console.log(`✅ Recreated playback AudioContext with native sample rate: ${nativeSampleRate}Hz`);
+        return playNextAudio();
+      }
 
        // Убеждаемся, что контекст в состоянии 'running'
        if (playbackCtx.state !== 'running') {
@@ -612,12 +619,14 @@ export const VoiceCall: React.FC<VoiceCallProps> = ({
       // Создаем и активируем AudioContext для воспроизведения заранее
       if (!playbackAudioContextRef.current) {
         try {
-          playbackAudioContextRef.current = new AudioContext({ sampleRate: 16000 });
+          // Используем нативный sample rate устройства для лучшего качества на iPhone
+          const nativeSampleRate = new AudioContext().sampleRate;
+          playbackAudioContextRef.current = new AudioContext({ sampleRate: nativeSampleRate });
           // Активируем контекст сразу при старте звонка (user interaction уже есть)
           if (playbackAudioContextRef.current.state === 'suspended') {
             await playbackAudioContextRef.current.resume();
           }
-          console.log(`✅ Playback AudioContext created and activated: ${playbackAudioContextRef.current.state}`);
+          console.log(`✅ Playback AudioContext created and activated: ${playbackAudioContextRef.current.state}, sample rate: ${nativeSampleRate}Hz`);
         } catch (error) {
           console.error('⚠️ Failed to create playback AudioContext:', error);
         }

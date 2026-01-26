@@ -74,6 +74,7 @@ const Chat = () => {
   const voiceLLMResponseRef = useRef<string>('');
   const voiceUserMessageIdRef = useRef<number | null>(null);
   const isInitializingRef = useRef(false);
+  const voiceLLMMessageIdRef = useRef<number | null>(null); // ID текущего сообщения ассистента в UI
 
   // Используем хуки для разделения ответственности
   const chatSession = useChatSession({ initialMessage: initialChatMessage || location.state?.initialMessage });
@@ -452,48 +453,118 @@ const Chat = () => {
   const handleVoiceCallLLMResponse = useCallback((delta: string, isStart: boolean = false, isEnd: boolean = false) => {
     if (isStart) {
       // Начало нового ответа LLM
+      // Если уже есть незавершенное сообщение, удаляем его
+      if (voiceLLMMessageIdRef.current !== null) {
+        setMessages(prev => prev.filter(msg => msg.id !== voiceLLMMessageIdRef.current));
+        voiceLLMMessageIdRef.current = null;
+      }
+      
       voiceLLMResponseRef.current = '';
+      
+      // Создаем уникальный ID для сообщения
+      const messageId = Date.now() + Math.random();
       
       // Добавляем пустое сообщение ассистента, которое будем обновлять
       const assistantMessage: Message = {
-        id: Date.now(),
+        id: messageId,
         chatId: chatSession.sessionId || 0,
         role: 'assistant',
         content: '',
         createdAt: new Date().toISOString()
       };
       
+      voiceLLMMessageIdRef.current = messageId;
       setMessages(prev => [...prev, assistantMessage]);
     } else if (isEnd) {
-      // Конец ответа LLM - сохраняем в БД
+      // Конец ответа LLM - обновляем UI и сохраняем в БД
       const finalResponse = voiceLLMResponseRef.current;
       
+      // Обновляем сообщение в UI перед сохранением в БД
+      if (voiceLLMMessageIdRef.current !== null && finalResponse) {
+        setMessages(prev => {
+          const messageIndex = prev.findIndex(msg => msg.id === voiceLLMMessageIdRef.current);
+          if (messageIndex !== -1) {
+            const updatedMessages = [...prev];
+            updatedMessages[messageIndex] = {
+              ...updatedMessages[messageIndex],
+              content: finalResponse
+            };
+            return updatedMessages;
+          }
+          return prev;
+        });
+      }
+      
+      // Сохраняем в БД
       if (finalResponse && chatSession.sessionId && user) {
         apiClient.saveMessage(
           chatSession.sessionId,
           'assistant',
           finalResponse
-        ).catch(error => {
+        ).then((savedMessage) => {
+          // Обновляем ID сообщения на реальный из БД
+          if (savedMessage && savedMessage.messageId && voiceLLMMessageIdRef.current !== null) {
+            setMessages(prev => {
+              const messageIndex = prev.findIndex(msg => msg.id === voiceLLMMessageIdRef.current);
+              if (messageIndex !== -1) {
+                const updatedMessages = [...prev];
+                updatedMessages[messageIndex] = {
+                  ...updatedMessages[messageIndex],
+                  id: savedMessage.messageId
+                };
+                return updatedMessages;
+              }
+              return prev;
+            });
+          }
+        }).catch(error => {
           console.error('Failed to save LLM response to DB:', error);
+          // Сообщение остается в UI даже если сохранение не удалось
         });
       }
       
-      voiceLLMResponseRef.current = '';
+      // Очищаем только если это не ошибка (при ошибке сообщение уже удалено)
+      if (finalResponse) {
+        voiceLLMResponseRef.current = '';
+        voiceLLMMessageIdRef.current = null;
+      } else {
+        // Если finalResponse пустой, удаляем незавершенное сообщение
+        if (voiceLLMMessageIdRef.current !== null) {
+          setMessages(prev => prev.filter(msg => msg.id !== voiceLLMMessageIdRef.current));
+          voiceLLMMessageIdRef.current = null;
+        }
+        voiceLLMResponseRef.current = '';
+      }
     } else {
-      // Накапливаем ответ
+      // Накапливаем ответ (delta)
       voiceLLMResponseRef.current += delta;
       
-      // Обновляем последнее сообщение ассистента
-      setMessages(prev => {
-        const lastMessage = prev[prev.length - 1];
-        if (lastMessage && lastMessage.role === 'assistant') {
-          return [
-            ...prev.slice(0, -1),
-            { ...lastMessage, content: voiceLLMResponseRef.current }
-          ];
-        }
-        return prev;
-      });
+      // Обновляем сообщение по ID, а не по позиции
+      if (voiceLLMMessageIdRef.current !== null) {
+        setMessages(prev => {
+          const messageIndex = prev.findIndex(msg => msg.id === voiceLLMMessageIdRef.current);
+          if (messageIndex !== -1) {
+            const updatedMessages = [...prev];
+            updatedMessages[messageIndex] = {
+              ...updatedMessages[messageIndex],
+              content: voiceLLMResponseRef.current
+            };
+            return updatedMessages;
+          }
+          // Если сообщение не найдено, но есть накопленный текст, создаем новое
+          if (voiceLLMResponseRef.current.trim()) {
+            const assistantMessage: Message = {
+              id: voiceLLMMessageIdRef.current,
+              chatId: chatSession.sessionId || 0,
+              role: 'assistant',
+              content: voiceLLMResponseRef.current,
+              createdAt: new Date().toISOString()
+            };
+            return [...prev, assistantMessage];
+          }
+          return prev;
+        });
+      }
     }
   }, [chatSession.sessionId, user]);
 

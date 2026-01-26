@@ -128,7 +128,14 @@ class ApiClient {
 
   // Удалить сообщение
   async deleteMessage(messageId: number): Promise<{ success: boolean }> {
-    return this.request(`/messages/${messageId}`, {
+    // Убеждаемся, что messageId - это число
+    const id = typeof messageId === 'number' ? messageId : parseInt(String(messageId || '0'), 10);
+    
+    if (!Number.isFinite(id) || id <= 0) {
+      throw new Error(`Invalid messageId: ${messageId}`);
+    }
+    
+    return this.request(`/messages/${id}`, {
       method: 'DELETE',
     });
   }

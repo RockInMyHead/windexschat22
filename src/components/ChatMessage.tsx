@@ -1313,6 +1313,154 @@ const WordTooltip = ({
   const [isLoadingResponse, setIsLoadingResponse] = React.useState(false);
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
   const responseRef = React.useRef<HTMLDivElement>(null);
+  const tooltipRef = React.useRef<HTMLDivElement>(null);
+  const [adjustedPosition, setAdjustedPosition] = React.useState(position);
+  const [transform, setTransform] = React.useState('translate(-50%, -100%)');
+
+  // Эффект для корректировки позиции tooltip, чтобы он не выходил за пределы экрана
+  // Пересчитываем позицию только при открытии tooltip (изменении position), а не при изменении контента
+  React.useEffect(() => {
+    // Используем requestAnimationFrame для пересчета после рендера
+    const updatePosition = () => {
+      if (!tooltipRef.current) return;
+
+      const tooltip = tooltipRef.current;
+      const tooltipRect = tooltip.getBoundingClientRect();
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+      const padding = 10; // Отступ от краев экрана
+
+      // Получаем реальные размеры tooltip
+      const tooltipWidth = tooltipRect.width || 320; // max-w-xs = 320px
+      const tooltipHeight = tooltipRect.height || 200; // Реальная высота
+      const halfWidth = tooltipWidth / 2;
+
+      let newX = position.x;
+      let newY = position.y;
+      let newTransform = 'translate(-50%, -100%)'; // По умолчанию над словом
+
+      // Проверяем горизонтальные границы с учетом transform
+      // При transform: translate(-50%, ...) центр tooltip находится в позиции newX
+      const leftEdge = newX - halfWidth;
+      const rightEdge = newX + halfWidth;
+
+      if (leftEdge < padding) {
+        // Tooltip выходит за левый край - сдвигаем вправо
+        newX = padding + halfWidth;
+      } else if (rightEdge > viewportWidth - padding) {
+        // Tooltip выходит за правый край - сдвигаем влево
+        newX = viewportWidth - padding - halfWidth;
+      }
+
+      // Проверяем вертикальные границы
+      const spaceAbove = position.y;
+      const spaceBelow = viewportHeight - position.y;
+      const wordHeight = 20; // Примерная высота слова для отступа
+
+      // Пробуем разместить сверху
+      let topY = position.y;
+      let topTransform = 'translate(-50%, -100%)';
+      let topBottomEdge = topY; // Нижний край при размещении сверху
+      let topFits = topBottomEdge >= padding;
+
+      // Пробуем разместить снизу
+      let bottomY = position.y + wordHeight;
+      let bottomTransform = 'translate(-50%, 0)';
+      let bottomTopEdge = bottomY; // Верхний край при размещении снизу
+      let bottomBottomEdge = bottomY + tooltipHeight;
+      let bottomFits = bottomTopEdge >= padding && bottomBottomEdge <= viewportHeight - padding;
+
+      // Выбираем лучшую позицию
+      if (spaceAbove >= tooltipHeight + padding && topFits) {
+        // Достаточно места сверху
+        newY = topY;
+        newTransform = topTransform;
+      } else if (bottomFits) {
+        // Размещаем снизу
+        newY = bottomY;
+        newTransform = bottomTransform;
+      } else {
+        // Недостаточно места ни сверху, ни снизу - размещаем в центре экрана
+        if (spaceAbove > spaceBelow) {
+          // Больше места сверху - размещаем сверху, но ограничиваем высоту
+          newY = Math.min(position.y, viewportHeight - tooltipHeight - padding);
+          newTransform = 'translate(-50%, -100%)';
+        } else {
+          // Больше места снизу - размещаем снизу
+          newY = Math.max(position.y + wordHeight, padding);
+          newTransform = 'translate(-50%, 0)';
+        }
+      }
+
+      // Финальная проверка всех границ с учетом transform
+      // Вычисляем реальные границы после применения transform
+      const finalLeft = newX - halfWidth;
+      const finalRight = newX + halfWidth;
+      let finalTop: number;
+      let finalBottom: number;
+
+      if (newTransform === 'translate(-50%, -100%)') {
+        // Tooltip над словом
+        finalBottom = newY;
+        finalTop = newY - tooltipHeight;
+      } else {
+        // Tooltip под словом
+        finalTop = newY;
+        finalBottom = newY + tooltipHeight;
+      }
+
+      // Корректируем горизонтальные границы
+      if (finalLeft < padding) {
+        newX = padding + halfWidth;
+      } else if (finalRight > viewportWidth - padding) {
+        newX = viewportWidth - padding - halfWidth;
+      }
+
+      // Корректируем вертикальные границы
+      if (finalTop < padding) {
+        if (newTransform === 'translate(-50%, -100%)') {
+          newY = padding + tooltipHeight;
+        } else {
+          newY = padding;
+        }
+      } else if (finalBottom > viewportHeight - padding) {
+        if (newTransform === 'translate(-50%, -100%)') {
+          newY = viewportHeight - padding;
+        } else {
+          newY = viewportHeight - padding - tooltipHeight;
+        }
+      }
+
+      setAdjustedPosition({ x: newX, y: newY });
+      setTransform(newTransform);
+    };
+
+    // Пересчитываем позицию несколько раз для учета изменения размеров контента
+    // Первый расчет сразу
+    requestAnimationFrame(updatePosition);
+    
+    // Второй расчет после небольшой задержки (когда контент начал загружаться)
+    const timeoutId1 = setTimeout(() => {
+      requestAnimationFrame(updatePosition);
+    }, 100);
+
+    // Третий расчет после задержки (когда контент может быть загружен)
+    const timeoutId2 = setTimeout(() => {
+      requestAnimationFrame(updatePosition);
+    }, 500);
+
+    // Также пересчитываем при изменении размера окна
+    const handleResize = () => {
+      requestAnimationFrame(updatePosition);
+    };
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      clearTimeout(timeoutId1);
+      clearTimeout(timeoutId2);
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [position]); // Пересчитываем только при изменении позиции (открытии tooltip)
 
   // Эффект для добавления/удаления blur эффекта на чат
   React.useEffect(() => {
@@ -1428,13 +1576,16 @@ const WordTooltip = ({
 
   return (
     <div
+        ref={tooltipRef}
         className="fixed z-50 bg-background border border-border rounded-lg shadow-lg p-3 max-w-xs max-h-[500px] flex flex-col"
         data-word-tooltip="true"
       style={{
-        left: position.x,
-        top: position.y,
-        transform: 'translate(-50%, -100%)',
-          filter: 'none',
+        left: adjustedPosition.x,
+        top: adjustedPosition.y,
+        transform: transform,
+        filter: 'none',
+        maxWidth: `min(320px, calc(100vw - 20px))`, // Ограничиваем ширину с учетом отступов
+        maxHeight: `min(500px, calc(100vh - 20px))`, // Ограничиваем высоту с учетом отступов
       }}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
@@ -1793,21 +1944,69 @@ const ChatMessage = ({ message, selectedModel, onMessageDelete, onMessageEdit }:
   // Функция удаления сообщения
   const handleDeleteMessage = async () => {
     console.log('🗑️ handleDeleteMessage called, message.id:', message.id, 'isDeleting:', isDeleting);
-    if (!message.id || isDeleting) {
-      console.log('⏳ Skipping delete - no message.id or already deleting');
+    
+    // Проверяем наличие ID и что это валидное число
+    const messageId = typeof message.id === 'number' ? message.id : parseInt(String(message.id || '0'), 10);
+    
+    if (!messageId || !Number.isFinite(messageId) || messageId <= 0) {
+      console.error('❌ Invalid message ID:', message.id, 'parsed as:', messageId);
+      alert('Ошибка: неверный ID сообщения. Сообщение не может быть удалено.');
+      return;
+    }
+    
+    if (isDeleting) {
+      console.log('⏳ Already deleting, skipping');
+      return;
+    }
+
+    // Проверяем, является ли ID временным (очень большое число от Date.now())
+    // Временные ID обычно больше 1e12 (примерно 2001 год в миллисекундах)
+    // Реальные ID из БД обычно намного меньше (начинаются с 1, 2, 3...)
+    const isTemporaryId = messageId > 1e12;
+    
+    if (isTemporaryId) {
+      // Это временное сообщение, которое еще не сохранено в БД
+      // Просто удаляем его из UI без запроса к серверу
+      console.log('🗑️ Temporary message detected, removing from UI only:', messageId);
+      onMessageDelete?.(messageId);
+      setShowDeleteModal(false);
       return;
     }
 
     setIsDeleting(true);
     try {
-      console.log('🗑️ Calling apiClient.deleteMessage for message:', message.id);
-      await apiClient.deleteMessage(message.id);
-      console.log(`✅ Message ${message.id} deleted successfully`);
-      onMessageDelete?.(message.id);
+      console.log('🗑️ Calling apiClient.deleteMessage for message:', messageId, 'type:', typeof messageId);
+      await apiClient.deleteMessage(messageId);
+      console.log(`✅ Message ${messageId} deleted successfully`);
+      onMessageDelete?.(messageId);
       setShowDeleteModal(false);
-    } catch (error) {
+    } catch (error: any) {
       console.error('❌ Failed to delete message:', error);
-      alert('Не удалось удалить сообщение. Попробуйте еще раз.');
+      
+      // Более информативное сообщение об ошибке
+      let errorMessage = 'Не удалось удалить сообщение. Попробуйте еще раз.';
+      
+      if (error?.message) {
+        const errorText = String(error.message);
+        if (errorText.includes('401') || errorText.includes('unauthorized')) {
+          errorMessage = 'Ошибка авторизации. Пожалуйста, обновите страницу и попробуйте снова.';
+        } else if (errorText.includes('404')) {
+          // Если сообщение не найдено, возможно оно уже было удалено или это временное сообщение
+          // В этом случае просто удаляем из UI
+          console.log('⚠️ Message not found on server, removing from UI:', messageId);
+          onMessageDelete?.(messageId);
+          setShowDeleteModal(false);
+          return;
+        } else if (errorText.includes('403') || errorText.includes('access denied')) {
+          errorMessage = 'Нет доступа к этому сообщению.';
+        } else if (errorText.includes('400') || errorText.includes('Invalid')) {
+          errorMessage = 'Неверный ID сообщения.';
+        } else if (errorText.includes('500')) {
+          errorMessage = 'Ошибка сервера. Попробуйте позже.';
+        }
+      }
+      
+      alert(errorMessage);
     } finally {
       setIsDeleting(false);
     }
@@ -1967,62 +2166,91 @@ const ChatMessage = ({ message, selectedModel, onMessageDelete, onMessageEdit }:
 
       // Создаем AudioContext для последовательного воспроизведения
       const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-      let currentTime = audioContext.currentTime;
+      
+      // ✅ КРИТИЧНО: Активируем AudioContext на мобильных устройствах
+      // На мобильных устройствах AudioContext создается в состоянии 'suspended'
+      // и требует активации через resume() в контексте пользовательского взаимодействия
+      if (audioContext.state === 'suspended') {
+        console.log('🔊 AudioContext suspended, resuming...');
+        await audioContext.resume();
+        console.log(`✅ AudioContext activated, state: ${audioContext.state}`);
+      }
+
+      let scheduledTime = audioContext.currentTime;
       const audioQueue: AudioBufferSourceNode[] = [];
 
-      // Функция для генерации и добавления аудио в очередь
-      const generateAndQueue = async (chunk: string, index: number) => {
+      // 1. Запускаем генерацию ВСЕХ чанков параллельно
+      const chunkPromises = chunks.map(async (chunk, index) => {
         try {
-          // Пропускаем пустые чанки
-          if (!chunk.trim()) return;
+          if (!chunk.trim()) return null;
           
-          console.log(`🎤 Generating audio for chunk ${index + 1}/${chunks.length}: "${chunk.substring(0, 30)}..."`);
+          console.log(`🎤 Starting generation for chunk ${index + 1}/${chunks.length}`);
 
-          // Определяем язык для каждого чанка отдельно
           const chunkLang = detectChunkLanguage(chunk);
           const result = chunkLang === 'ru'
             ? await localTTSClient.generateTTSRu(chunk)
             : await localTTSClient.generateTTSEn(chunk);
 
-          // Загружаем аудио
           const response = await fetch(result.audioUrl);
           const arrayBuffer = await response.arrayBuffer();
           const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
 
-          // Создаем источник и планируем воспроизведение
+          return { index, audioBuffer };
+        } catch (error) {
+          console.error(`❌ Failed to generate audio for chunk ${index + 1}:`, error);
+          return null;
+        }
+      });
+
+      // 2. Ожидаем чанки последовательно и сразу планируем их воспроизведение
+      // Это позволяет начать играть первый чанк, как только он готов, 
+      // пока остальные догружаются в фоне параллельно.
+      for (let i = 0; i < chunks.length; i++) {
+        const result = await chunkPromises[i];
+        
+        if (result && result.audioBuffer) {
+          const { audioBuffer } = result;
           const source = audioContext.createBufferSource();
           source.buffer = audioBuffer;
           source.connect(audioContext.destination);
 
-          // Запускаем воспроизведение в нужное время
-          source.start(currentTime);
-          currentTime += audioBuffer.duration;
+          // ✅ Дополнительная проверка перед воспроизведением
+          if (audioContext.state === 'suspended') {
+            console.warn('⚠️ AudioContext still suspended before playback, resuming...');
+            await audioContext.resume();
+          }
+
+          // Планируем запуск (минимум - текущее время контекста)
+          const startTime = Math.max(scheduledTime, audioContext.currentTime);
+          source.start(startTime);
           
+          // Обновляем время для следующего чанка
+          scheduledTime = startTime + audioBuffer.duration;
           audioQueue.push(source);
 
-          // Первый чанк - начинаем воспроизведение сразу
-          if (index === 0) {
-            console.log('🔊 Started playing first chunk (~0.3-0.5s delay)');
-            setIsGeneratingTTS(false); // Убираем индикатор загрузки
+          // Скрываем индикатор загрузки после первого чанка
+          if (i === 0) {
+            setIsGeneratingTTS(false);
+            console.log('🔊 First chunk playback scheduled');
           }
 
-          // Обработчик окончания последнего фрагмента
-          if (index === chunks.length - 1) {
+          // Если это последний чанк, вешаем обработчик завершения
+          if (i === chunks.length - 1) {
             source.onended = () => {
               console.log('✅ All audio playback completed');
-        setIsPlayingAudio(false);
+              setIsPlayingAudio(false);
               audioQueue.forEach(s => s.disconnect());
+              // Закрываем AudioContext после завершения воспроизведения
+              audioContext.close().catch(err => console.error('Error closing AudioContext:', err));
             };
           }
-
-    } catch (error) {
-          console.error(`❌ Failed to generate audio for chunk ${index + 1}:`, error);
+        } else if (i === chunks.length - 1 && audioQueue.length === 0) {
+          // Если последний чанк не удался и ничего не было проиграно
+          setIsGeneratingTTS(false);
+          setIsPlayingAudio(false);
+          // Закрываем AudioContext если ничего не воспроизводилось
+          audioContext.close().catch(err => console.error('Error closing AudioContext:', err));
         }
-      };
-
-      // Генерируем и воспроизводим аудио последовательно (для быстрого первого ответа)
-      for (let i = 0; i < chunks.length; i++) {
-        await generateAndQueue(chunks[i], i);
       }
 
     } catch (error) {
