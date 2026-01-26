@@ -311,8 +311,17 @@ export const useVoiceInput = ({
 
         appleRec.onend = () => {
           console.log("🎤 Apple/Safari: Recognition ended", { stopRequested: stopRequestedRef.current, isRecording: isRecordingRef.current });
+          // Если была остановка вручную, отправляем накопленный транскрипт и завершаем
+          if (stopRequestedRef.current) {
+            if (lastTranscriptRef.current.trim()) {
+              console.log("🎤 Apple/Safari: Sending accumulated transcript on manual stop (main):", lastTranscriptRef.current.trim());
+              onTranscriptRef.current?.(lastTranscriptRef.current.trim());
+            }
+            hardResetFlags();
+            return;
+          }
           // Если запись не была остановлена вручную, перезапускаем для продолжения записи
-          if (!stopRequestedRef.current && isRecordingRef.current) {
+          if (isRecordingRef.current) {
             console.log("🎤 Apple/Safari: Auto-restarting recognition to continue recording");
             // Небольшая задержка перед перезапуском для стабильности
             setTimeout(() => {
