@@ -118,6 +118,7 @@ const Chat = () => {
 
   // Voice input state
   const [voiceInputEnabled, setVoiceInputEnabled] = useState(true);
+  const [voiceTranscript, setVoiceTranscript] = useState<string>(""); // Сохраняем транскрипт для отправки при втором нажатии
 
   // Состояния для резюме
   const [isSummaryModalOpen, setIsSummaryModalOpen] = useState(false);
@@ -146,13 +147,15 @@ const Chat = () => {
   };
 
   // Voice input callbacks - use useCallback to prevent re-initialization
+  // Теперь не отправляем автоматически, а сохраняем транскрипт для отправки при втором нажатии
   const handleVoiceTranscript = useCallback((transcript: string) => {
     console.log('🎤 Voice transcript received:', transcript);
     setVoiceInputEnabled(true); // Re-enable after transcript
     if (transcript.trim()) {
-      chatSend.sendMessage(transcript, messages);
+      // Сохраняем транскрипт вместо автоматической отправки
+      setVoiceTranscript(transcript);
     }
-  }, [chatSend, messages]);
+  }, []);
 
   // Автоматическое исчезновение плана после завершения планирования
   useEffect(() => {
@@ -246,6 +249,17 @@ const Chat = () => {
       return () => clearTimeout(timer);
     }
   }, [voiceInput.isRecording, voiceInputEnabled]);
+
+  // Отправка сообщения при остановке записи (второе нажатие на кнопку)
+  useEffect(() => {
+    // Когда запись останавливается и есть сохраненный транскрипт - отправляем сообщение
+    if (!voiceInput.isRecording && voiceTranscript.trim()) {
+      const transcriptToSend = voiceTranscript;
+      setVoiceTranscript(""); // Очищаем транскрипт перед отправкой
+      console.log('🎤 Sending voice transcript on second button press:', transcriptToSend);
+      chatSend.sendMessage(transcriptToSend, messages);
+    }
+  }, [voiceInput.isRecording, voiceTranscript, chatSend, messages]);
 
   // Check browser support (only API availability, not permissions)
   const isSpeechRecognitionSupported = (() => {
@@ -980,8 +994,16 @@ const Chat = () => {
                       return;
                     }
                     if (voiceInput.isRecording) {
+                      // Второе нажатие - останавливаем запись
+                      // Отправка сообщения произойдет автоматически через useEffect при изменении isRecording
                       voiceInput.stopRecording();
                     } else {
+                      // Первое нажатие - начинаем запись
+                      // Очищаем предыдущий транскрипт, если он есть (если пользователь начал новую запись)
+                      if (voiceTranscript.trim()) {
+                        console.log('🎤 Starting new recording, clearing previous transcript');
+                        setVoiceTranscript("");
+                      }
                       setVoiceInputEnabled(false);
                         voiceInput.startRecording().then((started) => {
                       if (!started) {

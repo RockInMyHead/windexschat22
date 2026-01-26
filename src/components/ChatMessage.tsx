@@ -2364,6 +2364,8 @@ const ChatMessage = ({ message, selectedModel, onMessageDelete, onMessageEdit }:
 
       let scheduledTime = audioContext.currentTime;
       const audioQueue: AudioBufferSourceNode[] = [];
+      let processedChunksCount = 0; // Отслеживаем количество успешно обработанных чанков
+      let lastSuccessfulSource: AudioBufferSourceNode | null = null; // Последний успешно запланированный чанк
 
       // 4. Запускаем генерацию ВСЕХ чанков параллельно
       const chunkPromises = chunks.map(async (chunk, index) => {
@@ -2412,9 +2414,11 @@ const ChatMessage = ({ message, selectedModel, onMessageDelete, onMessageEdit }:
             const startTime = Math.max(scheduledTime, audioContext.currentTime);
             source.start(startTime);
             
-            // Обновляем время для следующего чанка
+            // Обновляем время для следующего чанка только если чанк успешно запланирован
             scheduledTime = startTime + audioBuffer.duration;
             audioQueue.push(source);
+            processedChunksCount++;
+            lastSuccessfulSource = source; // Сохраняем последний успешный источник
 
             // Скрываем индикатор загрузки после начала воспроизведения первого чанка
             if (index === 0) {
@@ -2423,36 +2427,38 @@ const ChatMessage = ({ message, selectedModel, onMessageDelete, onMessageEdit }:
             }
 
             console.log(`✅ Chunk ${index + 1} scheduled for ${startTime.toFixed(2)}s (duration: ${audioBuffer.duration.toFixed(2)}s)`);
-
-            // Если это последний чанк, вешаем обработчик завершения
-            if (index === chunks.length - 1) {
-              source.onended = () => {
-                console.log('✅ All audio playback completed');
-                setIsPlayingAudio(false);
-                audioQueue.forEach(s => s.disconnect());
-                audioContext.close().catch(err => console.error('Error closing AudioContext:', err));
-              };
-            }
           } else {
-            console.warn(`⚠️ Chunk ${i + 1} returned no data`);
-            if (i === 0) setIsGeneratingTTS(false);
-            
-            if (i === chunks.length - 1 && audioQueue.length === 0) {
-              setIsGeneratingTTS(false);
-              setIsPlayingAudio(false);
-              audioContext.close().catch(err => console.error('Error closing AudioContext:', err));
-            }
+            console.warn(`⚠️ Chunk ${i + 1} returned no data - skipping`);
+            // Не обновляем scheduledTime для пропущенного чанка
+            // Следующий успешный чанк будет запланирован сразу после предыдущего
           }
         } catch (err) {
           console.error(`❌ Error processing chunk ${i + 1}:`, err);
-          if (i === 0) setIsGeneratingTTS(false);
-          
-          if (i === chunks.length - 1 && audioQueue.length === 0) {
-            setIsGeneratingTTS(false);
-            setIsPlayingAudio(false);
-            audioContext.close().catch(err => console.error('Error closing AudioContext:', err));
-          }
+          // Не обновляем scheduledTime для чанка с ошибкой
         }
+      }
+
+      // 6. Вешаем обработчик завершения на последний успешно запланированный чанк
+      // Это гарантирует, что воспроизведение завершится корректно даже если последние чанки не загрузились
+      if (lastSuccessfulSource) {
+        lastSuccessfulSource.onended = () => {
+          console.log(`✅ All audio playback completed (processed ${processedChunksCount}/${chunks.length} chunks)`);
+          setIsPlayingAudio(false);
+          audioQueue.forEach(s => {
+            try {
+              s.disconnect();
+            } catch (e) {
+              // Игнорируем ошибки при отключении уже отключенных источников
+            }
+          });
+          audioContext.close().catch(err => console.error('Error closing AudioContext:', err));
+        };
+      } else {
+        // Если ни один чанк не загрузился, закрываем контекст сразу
+        console.warn('⚠️ No chunks were successfully processed');
+        setIsGeneratingTTS(false);
+        setIsPlayingAudio(false);
+        audioContext.close().catch(err => console.error('Error closing AudioContext:', err));
       }
 
     } catch (error) {
