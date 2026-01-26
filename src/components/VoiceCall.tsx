@@ -575,6 +575,8 @@ export const VoiceCall: React.FC<VoiceCallProps> = ({
 
       const source = audioContext.createMediaStreamSource(stream);
 
+      let workletNode: AudioWorkletNode;
+
       // Load AudioWorklet with error handling
       try {
         console.log('📦 Loading AudioWorklet module...');
@@ -592,7 +594,7 @@ export const VoiceCall: React.FC<VoiceCallProps> = ({
         await new Promise(resolve => setTimeout(resolve, 100));
         
         console.log('🔧 Creating AudioWorkletNode...');
-        const workletNode = new AudioWorkletNode(audioContext, 'pcm-processor');
+        workletNode = new AudioWorkletNode(audioContext, 'pcm-processor');
         workletNodeRef.current = workletNode;
         console.log('✅ AudioWorkletNode created successfully');
       } catch (workletError: any) {
