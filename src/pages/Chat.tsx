@@ -599,8 +599,19 @@ const Chat = () => {
       messageText,
       isLoading: chatSend.isLoading,
       isSending: chatSend.isSending,
-      hasText: !!messageText
+      hasText: !!messageText,
+      isRecording: voiceInput.isRecording
     });
+
+    // Если активна запись голоса, останавливаем ее перед отправкой текстового сообщения
+    if (voiceInput.isRecording) {
+      console.log('🎤 Stopping voice recording before sending text message');
+      setVoiceRecordingStoppedManually(false); // Не отправляем голосовое сообщение
+      setVoiceTranscript(""); // Очищаем транскрипт
+      voiceInput.stopRecording();
+      // Небольшая задержка, чтобы запись точно остановилась
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
 
     if (!chatSend.isLoading && !chatSend.isSending && messageText) {
       console.log('Sending message:', messageText);
