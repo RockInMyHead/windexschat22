@@ -44,7 +44,7 @@ const Index = () => {
   };
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-b from-background to-secondary/20 px-3 sm:px-4">
+    <div className="flex min-h-screen flex-col items-center justify-start bg-gradient-to-b from-background to-secondary/20 px-3 sm:px-4 pt-4 sm:pt-6">
       <div className="w-full max-w-3xl animate-fade-in">
         {/* Кнопка выхода для аутентифицированных пользователей */}
         {isAuthenticated && (
@@ -66,7 +66,7 @@ const Index = () => {
           </div>
         )}
 
-        <div className="text-center" style={{ lineHeight: 0 }}>
+        <div className="text-center" style={{ lineHeight: 0, margin: 0, padding: 0 }}>
           <img 
             src="/logo.png" 
             alt="WindexsAI" 
