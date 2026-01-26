@@ -589,8 +589,19 @@ export const useChatSend = ({
         try {
           const sid = Number(sessionIdToUse);
 
-          // ✅ Сохраняем user-message в БД сразу
-          await apiClient.saveMessage(sid, "user", messageText, lastArtifactId);
+          // ✅ Сохраняем user-message в БД сразу и получаем ID
+          const { messageId: userMessageId } = await apiClient.saveMessage(sid, "user", messageText, lastArtifactId);
+          // Обновляем последнее сообщение пользователя в состоянии с полученным ID
+          onMessageUpdate(prev => {
+            const updated = [...prev];
+            for (let i = updated.length - 1; i >= 0; i--) {
+              if (updated[i].role === 'user' && !updated[i].id && updated[i].content === messageText) {
+                updated[i] = { ...updated[i], id: userMessageId };
+                break;
+              }
+            }
+            return updated;
+          });
 
           // requestId для идемпотентности
           const editRequestId = generateId();
@@ -771,7 +782,20 @@ export const useChatSend = ({
       if (!Number.isFinite(sid) || sid <= 0) {
         throw new Error(`Invalid sessionIdToUse: ${sessionIdToUse}`);
       }
-      await apiClient.saveMessage(sid, "user", messageText);
+      // Сохраняем сообщение и получаем его ID
+      const { messageId } = await apiClient.saveMessage(sid, "user", messageText);
+      // Обновляем последнее сообщение пользователя в состоянии с полученным ID
+      onMessageUpdate(prev => {
+        const updated = [...prev];
+        // Находим последнее сообщение пользователя без ID
+        for (let i = updated.length - 1; i >= 0; i--) {
+          if (updated[i].role === 'user' && !updated[i].id && updated[i].content === messageText) {
+            updated[i] = { ...updated[i], id: messageId };
+            break;
+          }
+        }
+        return updated;
+      });
 
       // Если это первое сообщение пользователя в чате, генерируем заголовок
       if (currentMessages.length === 0 && sessionIdToUse) {
