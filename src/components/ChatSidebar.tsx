@@ -172,7 +172,17 @@ export function ChatSidebar({ onSelectChat, currentSessionId, refreshTrigger, on
       <SidebarContent className="bg-background border-r border-border">
         <div className="p-4 flex items-center justify-between">
           {!collapsed && (
-            <h2 className="text-lg font-semibold text-foreground">WindexsAI</h2>
+            <img 
+              src="/logo-sidebar.png" 
+              alt="WindexsAI" 
+              className="h-[1.125rem] w-auto object-contain"
+              style={{ 
+                margin: '0',
+                padding: '0',
+                display: 'block',
+                lineHeight: '1'
+              }}
+            />
           )}
           <SidebarTrigger className="ml-auto" />
         </div>
