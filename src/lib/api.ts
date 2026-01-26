@@ -212,7 +212,15 @@ class ApiClient {
 
   // Получить информацию о текущем пользователе
   me() {
-    return this.request("/me");
+    return this.request<any>("/me");
+  }
+
+  // Обновить профиль текущего пользователя
+  async updateProfile(data: { username?: string; email?: string }): Promise<any> {
+    return this.request('/me', {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    });
   }
 
   // Выйти из системы
@@ -371,6 +379,7 @@ class LocalTTSClient {
     model?: string;
     voice?: string;
     speed?: number;
+    skipConversion?: boolean;
   } = {}): Promise<{ audioUrl: string; duration?: number }> {
     try {
       // Улучшенное определение языка:
@@ -399,7 +408,8 @@ class LocalTTSClient {
           model: model,
           voice: voice,
           speed: options.speed || 1.0,
-          emotion: 'neutral'
+          emotion: 'neutral',
+          skipConversion: options.skipConversion ?? false
         }),
       });
 
@@ -428,6 +438,7 @@ class LocalTTSClient {
     model?: string;
     voice?: string;
     speed?: number;
+    skipConversion?: boolean;
   } = {}): Promise<{ audioUrl: string; duration?: number }> {
     console.log('🔊 Silero TTS generateTTSRu called with:', { text: text.substring(0, 50), options });
     return this.generateTTS(text, {
@@ -442,6 +453,7 @@ class LocalTTSClient {
     model?: string;
     voice?: string;
     speed?: number;
+    skipConversion?: boolean;
   } = {}): Promise<{ audioUrl: string; duration?: number }> {
     console.log('🔊 Silero TTS generateTTSEn called with:', { text: text.substring(0, 50), options });
     return this.generateTTS(text, {

@@ -647,7 +647,7 @@ const parseMarkdown = (
           currentTable.forEach((tableLine, idx) => {
             result.push(
               <p key={`table-text-${result.length}-${idx}`} className="my-1">
-                {renderInlineMarkdown(tableLine)}
+                {renderInlineMarkdown(tableLine, 0, onWordClick, context)}
               </p>
             );
           });
@@ -659,7 +659,7 @@ const parseMarkdown = (
       currentTable.forEach((tableLine, idx) => {
         result.push(
           <p key={`table-text-${result.length}-${idx}`} className="my-1">
-            {renderInlineMarkdown(tableLine)}
+            {renderInlineMarkdown(tableLine, 0, onWordClick, context)}
           </p>
         );
       });
@@ -1089,10 +1089,15 @@ const renderInlineMarkdown = (
         </code>
       );
     } else if (part.type === 'bold') {
-    // Жирный текст обрабатываем рекурсивно (только для вложенных элементов, не для дубликатов)
-    const boldContent = part.content.includes('**') || part.content.includes('__')
-      ? renderInlineMarkdown(part.content, depth + 1, onWordClick, context)
-      : part.content;
+      // Жирный текст обрабатываем рекурсивно (только для вложенных элементов, не для дубликатов)
+      let boldContent: React.ReactNode;
+      if (part.content.includes('**') || part.content.includes('__')) {
+        // Если есть markdown-символы, обрабатываем рекурсивно
+        boldContent = renderInlineMarkdown(part.content, depth + 1, onWordClick, context);
+      } else {
+        // Если markdown уже обработан, все равно делаем текст кликабельным
+        boldContent = renderClickableText(part.content, `bold-${nodeKey}`, onWordClick, context);
+      }
       nodes.push(
         <strong key={`bold-${nodeKey++}`} className="font-bold text-foreground break-words overflow-wrap-anywhere" style={{ pointerEvents: 'auto' }}>
           {boldContent}
@@ -1317,61 +1322,132 @@ const WordTooltip = ({
   const [adjustedPosition, setAdjustedPosition] = React.useState(position);
   const [transform, setTransform] = React.useState('translate(-50%, -100%)');
 
+  const isMobile = typeof window !== 'undefined' && window.innerWidth <= 768;
+
   // Эффект для корректировки позиции tooltip, чтобы он не выходил за пределы экрана
   // Пересчитываем позицию только при открытии tooltip (изменении position), а не при изменении контента
   React.useEffect(() => {
+    if (isMobile) return; // На мобильных используем фиксированную шторку снизу
+
+    // Функция для получения точных размеров viewport на мобильных устройствах
+    const getViewportDimensions = () => {
+      // Используем Visual Viewport API если доступен (более точный на мобильных)
+      if (typeof window !== 'undefined' && window.visualViewport) {
+        return {
+          width: window.visualViewport.width,
+          height: window.visualViewport.height,
+          offsetTop: window.visualViewport.offsetTop || 0,
+          offsetLeft: window.visualViewport.offsetLeft || 0,
+        };
+      }
+      
+      // Fallback на стандартные методы
+      return {
+        width: window.innerWidth,
+        height: window.innerHeight,
+        offsetTop: 0,
+        offsetLeft: 0,
+      };
+    };
+
+    // Функция для получения safe area insets (для устройств с вырезами)
+    const getSafeAreaInsets = () => {
+      // Пытаемся получить из CSS переменных или используем значения по умолчанию
+      const style = getComputedStyle(document.documentElement);
+      const safeTop = parseInt(style.getPropertyValue('--safe-area-inset-top') || '0', 10);
+      const safeBottom = parseInt(style.getPropertyValue('--safe-area-inset-bottom') || '0', 10);
+      const safeLeft = parseInt(style.getPropertyValue('--safe-area-inset-left') || '0', 10);
+      const safeRight = parseInt(style.getPropertyValue('--safe-area-inset-right') || '0', 10);
+      
+      return {
+        top: safeTop || 0,
+        bottom: safeBottom || 0,
+        left: safeLeft || 0,
+        right: safeRight || 0,
+      };
+    };
+
     // Используем requestAnimationFrame для пересчета после рендера
     const updatePosition = () => {
       if (!tooltipRef.current) return;
 
       const tooltip = tooltipRef.current;
       const tooltipRect = tooltip.getBoundingClientRect();
-      const viewportWidth = window.innerWidth;
-      const viewportHeight = window.innerHeight;
-      const padding = 10; // Отступ от краев экрана
+      
+      // Получаем точные размеры viewport
+      const viewport = getViewportDimensions();
+      const safeArea = getSafeAreaInsets();
+      
+      // Учитываем safe area insets и виртуальную клавиатуру
+      const viewportWidth = viewport.width - safeArea.left - safeArea.right;
+      const viewportHeight = viewport.height - safeArea.top - safeArea.bottom;
+      
+      // На мобильных увеличиваем отступы для лучшей видимости
+      const isMobile = window.innerWidth <= 768;
+      const mobilePadding = isMobile ? 15 : 10;
+      const desktopPadding = 20; // Отступ для десктопа
 
-      // Получаем реальные размеры tooltip
-      const tooltipWidth = tooltipRect.width || 320; // max-w-xs = 320px
-      const tooltipHeight = tooltipRect.height || 200; // Реальная высота
+      // Получаем реальные размеры tooltip с учетом max-width
+      // На десктопе max-width = min(320px, 100vw - 40px)
+      const maxTooltipWidth = isMobile 
+        ? viewportWidth - (mobilePadding * 2)
+        : Math.min(320, viewportWidth - (desktopPadding * 2));
+      
+      // Используем реальную ширину tooltip, но не больше max-width
+      const tooltipWidth = Math.min(tooltipRect.width || 320, maxTooltipWidth);
+      const tooltipHeight = tooltipRect.height || 200; 
       const halfWidth = tooltipWidth / 2;
 
-      let newX = position.x;
-      let newY = position.y;
+      // Корректируем позицию с учетом offset от visualViewport
+      let newX = position.x - viewport.offsetLeft;
+      let newY = position.y - viewport.offsetTop;
       let newTransform = 'translate(-50%, -100%)'; // По умолчанию над словом
 
-      // Проверяем горизонтальные границы с учетом transform
-      // При transform: translate(-50%, ...) центр tooltip находится в позиции newX
-      const leftEdge = newX - halfWidth;
-      const rightEdge = newX + halfWidth;
+      // Определяем границы для горизонтальной позиции (нужны везде)
+      const padding = isMobile ? mobilePadding : desktopPadding;
+      const minX = padding + safeArea.left;
+      const maxX = viewportWidth - padding - safeArea.right;
 
-      if (leftEdge < padding) {
-        // Tooltip выходит за левый край - сдвигаем вправо
-        newX = padding + halfWidth;
-      } else if (rightEdge > viewportWidth - padding) {
-        // Tooltip выходит за правый край - сдвигаем влево
-        newX = viewportWidth - padding - halfWidth;
+      // Центрируем на мобильных если ширина почти на весь экран
+      if (isMobile && tooltipWidth > viewportWidth * 0.8) {
+        newX = viewportWidth / 2 + safeArea.left;
+      } else {
+        // Проверяем горизонтальные границы с учетом transform и safe area
+        const leftEdge = newX - halfWidth;
+        const rightEdge = newX + halfWidth;
+
+        if (leftEdge < minX) {
+          // Tooltip выходит за левый край - сдвигаем вправо
+          newX = minX + halfWidth;
+        } else if (rightEdge > maxX) {
+          // Tooltip выходит за правый край - сдвигаем влево
+          newX = maxX - halfWidth;
+        }
       }
 
-      // Проверяем вертикальные границы
-      const spaceAbove = position.y;
-      const spaceBelow = viewportHeight - position.y;
+      // Проверяем вертикальные границы с учетом safe area
+      const spaceAbove = newY;
+      const spaceBelow = viewportHeight - newY;
       const wordHeight = 20; // Примерная высота слова для отступа
+      const verticalPadding = isMobile ? mobilePadding : desktopPadding;
+      const minY = verticalPadding + safeArea.top;
+      const maxY = viewportHeight - verticalPadding - safeArea.bottom;
 
       // Пробуем разместить сверху
-      let topY = position.y;
+      let topY = newY;
       let topTransform = 'translate(-50%, -100%)';
       let topBottomEdge = topY; // Нижний край при размещении сверху
-      let topFits = topBottomEdge >= padding;
+      let topFits = topBottomEdge >= minY;
 
       // Пробуем разместить снизу
-      let bottomY = position.y + wordHeight;
+      let bottomY = newY + wordHeight;
       let bottomTransform = 'translate(-50%, 0)';
       let bottomTopEdge = bottomY; // Верхний край при размещении снизу
       let bottomBottomEdge = bottomY + tooltipHeight;
-      let bottomFits = bottomTopEdge >= padding && bottomBottomEdge <= viewportHeight - padding;
+      let bottomFits = bottomTopEdge >= minY && bottomBottomEdge <= maxY;
 
       // Выбираем лучшую позицию
-      if (spaceAbove >= tooltipHeight + padding && topFits) {
+      if (spaceAbove >= tooltipHeight + verticalPadding && topFits) {
         // Достаточно места сверху
         newY = topY;
         newTransform = topTransform;
@@ -1380,22 +1456,25 @@ const WordTooltip = ({
         newY = bottomY;
         newTransform = bottomTransform;
       } else {
-        // Недостаточно места ни сверху, ни снизу - размещаем в центре экрана
+        // Недостаточно места ни сверху, ни снизу - размещаем в центре видимой области
         if (spaceAbove > spaceBelow) {
           // Больше места сверху - размещаем сверху, но ограничиваем высоту
-          newY = Math.min(position.y, viewportHeight - tooltipHeight - padding);
+          newY = Math.min(newY, maxY - tooltipHeight);
           newTransform = 'translate(-50%, -100%)';
         } else {
           // Больше места снизу - размещаем снизу
-          newY = Math.max(position.y + wordHeight, padding);
+          newY = Math.max(newY + wordHeight, minY);
           newTransform = 'translate(-50%, 0)';
         }
       }
 
-      // Финальная проверка всех границ с учетом transform
-      // Вычисляем реальные границы после применения transform
-      const finalLeft = newX - halfWidth;
-      const finalRight = newX + halfWidth;
+      // Финальная проверка всех границ с учетом transform и safe area
+      // Пересчитываем halfWidth на основе реальной ширины tooltip после применения max-width
+      const actualTooltipWidth = Math.min(tooltipRect.width || 320, maxTooltipWidth);
+      const actualHalfWidth = actualTooltipWidth / 2;
+      
+      const finalLeft = newX - actualHalfWidth;
+      const finalRight = newX + actualHalfWidth;
       let finalTop: number;
       let finalBottom: number;
 
@@ -1409,29 +1488,33 @@ const WordTooltip = ({
         finalBottom = newY + tooltipHeight;
       }
 
-      // Корректируем горизонтальные границы
-      if (finalLeft < padding) {
-        newX = padding + halfWidth;
-      } else if (finalRight > viewportWidth - padding) {
-        newX = viewportWidth - padding - halfWidth;
+      // Корректируем горизонтальные границы с учетом safe area и реальной ширины
+      if (finalLeft < minX) {
+        newX = minX + actualHalfWidth;
+      } else if (finalRight > maxX) {
+        newX = maxX - actualHalfWidth;
       }
 
-      // Корректируем вертикальные границы
-      if (finalTop < padding) {
+      // Корректируем вертикальные границы с учетом safe area
+      if (finalTop < minY) {
         if (newTransform === 'translate(-50%, -100%)') {
-          newY = padding + tooltipHeight;
+          newY = minY + tooltipHeight;
         } else {
-          newY = padding;
+          newY = minY;
         }
-      } else if (finalBottom > viewportHeight - padding) {
+      } else if (finalBottom > maxY) {
         if (newTransform === 'translate(-50%, -100%)') {
-          newY = viewportHeight - padding;
+          newY = maxY;
         } else {
-          newY = viewportHeight - padding - tooltipHeight;
+          newY = maxY - tooltipHeight;
         }
       }
 
-      setAdjustedPosition({ x: newX, y: newY });
+      // Возвращаем позицию с учетом offset от visualViewport
+      setAdjustedPosition({ 
+        x: newX + viewport.offsetLeft, 
+        y: newY + viewport.offsetTop 
+      });
       setTransform(newTransform);
     };
 
@@ -1449,16 +1532,33 @@ const WordTooltip = ({
       requestAnimationFrame(updatePosition);
     }, 500);
 
-    // Также пересчитываем при изменении размера окна
+    // Также пересчитываем при изменении размера окна и visualViewport
     const handleResize = () => {
       requestAnimationFrame(updatePosition);
     };
+    
+    const handleVisualViewportChange = () => {
+      requestAnimationFrame(updatePosition);
+    };
+    
     window.addEventListener('resize', handleResize);
+    window.addEventListener('orientationchange', handleResize);
+    
+    // Слушаем изменения visualViewport (важно для мобильных)
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', handleVisualViewportChange);
+      window.visualViewport.addEventListener('scroll', handleVisualViewportChange);
+    }
 
     return () => {
       clearTimeout(timeoutId1);
       clearTimeout(timeoutId2);
       window.removeEventListener('resize', handleResize);
+      window.removeEventListener('orientationchange', handleResize);
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener('resize', handleVisualViewportChange);
+        window.visualViewport.removeEventListener('scroll', handleVisualViewportChange);
+      }
     };
   }, [position]); // Пересчитываем только при изменении позиции (открытии tooltip)
 
@@ -1575,101 +1675,131 @@ const WordTooltip = ({
   // Убрано автозакрытие - tooltip закрывается только по кнопке ✕
 
   return (
-    <div
-        ref={tooltipRef}
-        className="fixed z-50 bg-background border border-border rounded-lg shadow-lg p-3 max-w-xs max-h-[500px] flex flex-col"
-        data-word-tooltip="true"
-      style={{
-        left: adjustedPosition.x,
-        top: adjustedPosition.y,
-        transform: transform,
-        filter: 'none',
-        maxWidth: `min(320px, calc(100vw - 20px))`, // Ограничиваем ширину с учетом отступов
-        maxHeight: `min(500px, calc(100vh - 20px))`, // Ограничиваем высоту с учетом отступов
-      }}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-    >
-        {/* Заголовок */}
-        <div className="flex items-center justify-between mb-2 shrink-0">
-        <span className="font-semibold text-primary text-sm">"{word}"</span>
-        <button
+    <>
+      {/* Backdrop для мобильных */}
+      {isMobile && (
+        <div 
+          className="fixed inset-0 bg-black/40 z-[49] animate-in fade-in duration-200"
           onClick={onClose}
-          className="text-muted-foreground hover:text-foreground ml-2 text-xs"
-          title="Закрыть"
-        >
-          ✕
-        </button>
-      </div>
-        
-        {/* Область с описанием и ответом LLM - с прокруткой */}
-        <div className="flex-1 overflow-y-auto min-h-0 mb-3">
-          <div className="text-sm text-muted-foreground leading-relaxed mb-3">
-        {description === 'Загрузка...' ? (
-          <span className="flex items-center gap-2">
-            <div className="animate-spin rounded-full h-3 w-3 border border-primary border-t-transparent" />
-            {description}
-          </span>
-        ) : (
-          renderTooltipMarkdown(description)
-        )}
+        />
+      )}
+
+      <div
+          ref={tooltipRef}
+          className={`fixed z-50 bg-background border border-border flex flex-col ${
+            isMobile 
+              ? "bottom-0 left-0 right-0 rounded-t-2xl p-4 pb-safe shadow-[0_-8px_30px_rgb(0,0,0,0.12)] animate-in slide-in-from-bottom duration-300" 
+              : "rounded-lg shadow-lg p-3"
+          }`}
+          data-word-tooltip="true"
+        style={isMobile ? {
+          left: 0,
+          bottom: 0,
+          top: 'auto',
+          transform: 'none',
+          maxWidth: '100%',
+          maxHeight: '80vh',
+          width: '100%',
+        } : {
+          left: adjustedPosition.x,
+          top: adjustedPosition.y,
+          transform: transform,
+          filter: 'none',
+          width: 'max-content',
+          maxWidth: `min(320px, calc(100vw - 40px))`, // Правильный синтаксис calc с отступом 40px (20px с каждой стороны)
+          maxHeight: `min(400px, calc(100vh - 40px))`, // Ограничиваем высоту для скролла внутри
+        }}
+        onMouseEnter={() => !isMobile && setIsHovered(true)}
+        onMouseLeave={() => !isMobile && setIsHovered(false)}
+      >
+          {/* Хендл для мобильных */}
+          {isMobile && (
+            <div className="w-12 h-1.5 bg-muted rounded-full mx-auto mb-4 shrink-0" />
+          )}
+
+          {/* Заголовок */}
+          <div className="flex items-center justify-between mb-3 shrink-0">
+          <span className="font-bold text-primary text-base sm:text-sm">"{word}"</span>
+          <button
+            onClick={onClose}
+            className="p-1 -mr-1 text-muted-foreground hover:text-foreground"
+            title="Закрыть"
+          >
+            <span className="text-xl sm:text-xs">✕</span>
+          </button>
+        </div>
+          
+          {/* Область с описанием и ответом LLM - с прокруткой */}
+          <div className="flex-1 overflow-y-auto min-h-0 mb-3 overscroll-contain">
+            <div className="text-sm text-muted-foreground leading-relaxed mb-3">
+          {description === 'Загрузка...' ? (
+            <span className="flex items-center gap-2">
+              <div className="animate-spin rounded-full h-3 w-3 border border-primary border-t-transparent" />
+              {description}
+            </span>
+          ) : (
+            renderTooltipMarkdown(description)
+          )}
+            </div>
+            
+            {/* Ответ от LLM */}
+            {llmResponse && (
+              <div 
+                ref={responseRef}
+                className="border-t border-border pt-3 mt-3 text-sm text-foreground leading-relaxed"
+              >
+                <div className="font-semibold text-primary text-xs mb-2">Ответ:</div>
+                <div className="text-sm text-foreground">
+                  {renderTooltipMarkdown(llmResponse)}
+                </div>
+              </div>
+            )}
+            
+            {/* Индикатор загрузки */}
+            {isLoadingResponse && (
+              <div className="border-t border-border pt-3 mt-3 flex items-center gap-2 text-sm text-muted-foreground">
+                <div className="animate-spin rounded-full h-3 w-3 border border-primary border-t-transparent" />
+                <span>Отправка запроса...</span>
+              </div>
+            )}
           </div>
           
-          {/* Ответ от LLM */}
-          {llmResponse && (
-            <div 
-              ref={responseRef}
-              className="border-t border-border pt-3 mt-3 text-sm text-foreground leading-relaxed"
-            >
-              <div className="font-semibold text-primary text-xs mb-2">Ответ:</div>
-              <div className="text-sm text-foreground">
-                {renderTooltipMarkdown(llmResponse)}
+          {/* Поле ввода и кнопка отправки (только для десктопа) */}
+          {!isMobile && (
+            <div className="border-t border-border pt-3 mt-3 shrink-0">
+              <div className="flex gap-2">
+                <Textarea
+                  ref={textareaRef}
+                  value={inputValue}
+                  onChange={(e) => setInputValue(e.target.value)}
+                  onFocus={() => setIsInputFocused(true)}
+                  onBlur={() => {
+                    // Небольшая задержка, чтобы кнопка успела обработать клик
+                    setTimeout(() => setIsInputFocused(false), 200);
+                  }}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Задать вопрос..."
+                  className="h-[40px] resize-none text-sm"
+                  disabled={isLoadingResponse}
+                />
+                <Button
+                  onClick={handleSend}
+                  disabled={!inputValue.trim() || isLoadingResponse}
+                  size="icon"
+                  className="shrink-0 h-[40px] w-[40px]"
+                  title="Отправить"
+                >
+                  {isLoadingResponse ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Send className="h-3 w-3" />
+                  )}
+                </Button>
               </div>
             </div>
           )}
-          
-          {/* Индикатор загрузки */}
-          {isLoadingResponse && (
-            <div className="border-t border-border pt-3 mt-3 flex items-center gap-2 text-sm text-muted-foreground">
-              <div className="animate-spin rounded-full h-3 w-3 border border-primary border-t-transparent" />
-              <span>Отправка запроса...</span>
-            </div>
-          )}
-        </div>
-        
-        {/* Поле ввода и кнопка отправки */}
-        <div className="border-t border-border pt-3 mt-3 shrink-0">
-          <div className="flex gap-2">
-            <Textarea
-              ref={textareaRef}
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              onFocus={() => setIsInputFocused(true)}
-              onBlur={() => {
-                // Небольшая задержка, чтобы кнопка успела обработать клик
-                setTimeout(() => setIsInputFocused(false), 200);
-              }}
-              onKeyDown={handleKeyDown}
-              placeholder="Задать вопрос..."
-              className="h-[40px] resize-none text-sm"
-              disabled={isLoadingResponse}
-            />
-            <Button
-              onClick={handleSend}
-              disabled={!inputValue.trim() || isLoadingResponse}
-              size="icon"
-              className="shrink-0 h-[40px] w-[40px]"
-              title="Отправить"
-            >
-              {isLoadingResponse ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
-              ) : (
-                <Send className="h-3 w-3" />
-              )}
-            </Button>
-          </div>
       </div>
-    </div>
+    </>
   );
 };
 
@@ -2087,12 +2217,32 @@ const ChatMessage = ({ message, selectedModel, onMessageDelete, onMessageEdit }:
 
   // Функция обработки клика на слово
   const handleWordClick = async (word: string, event: React.MouseEvent, context: string) => {
+    // Очищаем слово от markdown-символов
+    const cleanWord = word
+      .replace(/\*\*/g, '') // Убираем жирный текст
+      .replace(/\*/g, '') // Убираем курсив
+      .replace(/__/g, '') // Убираем подчеркивание
+      .replace(/`/g, '') // Убираем код
+      .replace(/#{1,6}\s/g, '') // Убираем заголовки
+      .trim();
+
+    if (!cleanWord || cleanWord.length < 2) {
+      console.log('⚠️ Слово слишком короткое или пустое после очистки:', word);
+      return;
+    }
+
+    // Если кликнули на то же слово, закрываем tooltip
+    if (tooltip && tooltip.word === cleanWord) {
+      setTooltip(null);
+      return;
+    }
+
     if (isLoadingDescription) {
       console.log('⏳ Уже загружается описание, пропускаем');
       return; // Предотвращаем множественные запросы
     }
 
-    console.log('🎯 Клик на слово:', word, 'в контексте:', context.substring(0, 100) + '...');
+    console.log('🎯 Клик на слово:', cleanWord, 'в контексте:', context.substring(0, 100) + '...');
 
     const rect = (event.target as HTMLElement).getBoundingClientRect();
     const position = {
@@ -2101,23 +2251,33 @@ const ChatMessage = ({ message, selectedModel, onMessageDelete, onMessageEdit }:
     };
 
     setTooltip({
-      word,
+      word: cleanWord,
       description: 'Загрузка...',
       position,
     });
 
-    const description = await generateWordDescription(word, message.content);
-    console.log('📝 Финальное описание для слова', word, ':', description);
+    const description = await generateWordDescription(cleanWord, message.content);
+    console.log('📝 Финальное описание для слова', cleanWord, ':', description);
     setTooltip(prev => prev ? { ...prev, description } : null);
   };
 
-  // Функция разбиения текста на мелкие чанки (5-10 слов) для быстрой озвучки
-  const splitIntoChunks = (text: string, wordsPerChunk: number = 8): string[] => {
+  // Функция разбиения текста на чанки с адаптивным размером для быстрой озвучки
+  const splitIntoChunks = (text: string): string[] => {
     const words = text.split(/\s+/);
+    const totalWords = words.length;
+    
+    // Для коротких сообщений (до 15 слов) - один чанк
+    if (totalWords <= 15) {
+      return [text.trim()];
+    }
+    
+    // Для всех остальных - чанки по 7-10 слов для МГНОВЕННОГО старта.
+    // Чем меньше чанк, тем быстрее пользователь услышит первую часть фразы.
+    const adaptiveChunkSize = totalWords <= 50 ? 7 : 10;
     const chunks: string[] = [];
     
-    for (let i = 0; i < words.length; i += wordsPerChunk) {
-      const chunk = words.slice(i, i + wordsPerChunk).join(' ');
+    for (let i = 0; i < words.length; i += adaptiveChunkSize) {
+      const chunk = words.slice(i, i + adaptiveChunkSize).join(' ');
       if (chunk.trim().length > 0) {
         chunks.push(chunk.trim());
       }
@@ -2134,52 +2294,78 @@ const ChatMessage = ({ message, selectedModel, onMessageDelete, onMessageEdit }:
     setIsPlayingAudio(true);
     
     try {
-      // Очищаем текст от markdown
-      const cleanText = message.content
+      // 1. Очищаем текст от markdown и спецсимволов, которые могут вызвать ошибку в Silero
+      let cleanText = message.content
         .replace(/\*\*/g, '')
         .replace(/\*/g, '')
         .replace(/`/g, '')
         .replace(/#{1,6}\s/g, '')
+        .replace(/[()]/g, ',') // Заменяем скобки на запятые для правильной интонации и во избежание ошибок
+        .replace(/[\[\]{}]/g, '') // Убираем остальные виды скобок
         .trim();
 
       console.log(`🎵 Streaming TTS started for text length: ${cleanText.length}`);
 
-      // Разбиваем на чанки по 8 слов
-      const chunks = splitIntoChunks(cleanText, 8);
-      console.log(`📝 Split into ${chunks.length} chunks`);
+      // 2. Предварительная конвертация цифр (если есть) для ускорения
+      // Это позволяет не делать тяжелый запрос для каждого чанка
+      let skipConversionOnServer = false;
+      if (/\d/.test(cleanText)) {
+        try {
+          console.log('🔢 Pre-converting numbers for entire message...');
+          // Увеличиваем таймаут для длинных текстов
+          const timeout = cleanText.length > 500 ? 5000 : 3000;
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), timeout);
+          
+          const convRes = await fetch('/api/utils/convert-numbers', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: cleanText }),
+            signal: controller.signal
+          });
+          
+          clearTimeout(timeoutId);
+          
+          if (convRes.ok) {
+            const data = await convRes.json();
+            cleanText = data.text;
+            skipConversionOnServer = true; // Теперь серверу не нужно конвертировать чанки
+            console.log('✅ Pre-conversion successful');
+          }
+        } catch (e: any) {
+          if (e.name === 'AbortError') {
+            console.warn('⚠️ Pre-conversion timeout, falling back to per-chunk conversion');
+          } else {
+            console.warn('⚠️ Pre-conversion failed, falling back to per-chunk conversion', e);
+          }
+        }
+      }
+
+      // 3. Разбиваем на адаптивные чанки
+      const chunks = splitIntoChunks(cleanText);
+      console.log(`📝 Split into ${chunks.length} chunks (adaptive size)`);
 
       // Функция для определения языка чанка
       const detectChunkLanguage = (chunk: string): 'ru' | 'en' => {
         const trimmed = chunk.trim();
-        if (!trimmed) return 'ru'; // Пустой чанк - пропускаем
-        
-        // Если есть кириллица - русский (даже если есть английский или цифры)
+        if (!trimmed) return 'ru';
         if (/[а-яё]/i.test(trimmed)) return 'ru';
-        
-        // Если только английские буквы (без кириллицы) - английский
         if (/[a-z]/i.test(trimmed) && !/[а-яё]/i.test(trimmed)) return 'en';
-        
-        // Для цифр, знаков препинания, смешанного текста - используем русский
-        // (русская модель Silero лучше обрабатывает цифры и смешанный контент)
         return 'ru';
       };
 
-      // Создаем AudioContext для последовательного воспроизведения
+      // Создаем AudioContext
       const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
       
-      // ✅ КРИТИЧНО: Активируем AudioContext на мобильных устройствах
-      // На мобильных устройствах AudioContext создается в состоянии 'suspended'
-      // и требует активации через resume() в контексте пользовательского взаимодействия
       if (audioContext.state === 'suspended') {
         console.log('🔊 AudioContext suspended, resuming...');
         await audioContext.resume();
-        console.log(`✅ AudioContext activated, state: ${audioContext.state}`);
       }
 
       let scheduledTime = audioContext.currentTime;
       const audioQueue: AudioBufferSourceNode[] = [];
 
-      // 1. Запускаем генерацию ВСЕХ чанков параллельно
+      // 4. Запускаем генерацию ВСЕХ чанков параллельно
       const chunkPromises = chunks.map(async (chunk, index) => {
         try {
           if (!chunk.trim()) return null;
@@ -2187,9 +2373,11 @@ const ChatMessage = ({ message, selectedModel, onMessageDelete, onMessageEdit }:
           console.log(`🎤 Starting generation for chunk ${index + 1}/${chunks.length}`);
 
           const chunkLang = detectChunkLanguage(chunk);
+          const options = { skipConversion: skipConversionOnServer };
+          
           const result = chunkLang === 'ru'
-            ? await localTTSClient.generateTTSRu(chunk)
-            : await localTTSClient.generateTTSEn(chunk);
+            ? await localTTSClient.generateTTSRu(chunk, options)
+            : await localTTSClient.generateTTSEn(chunk, options);
 
           const response = await fetch(result.audioUrl);
           const arrayBuffer = await response.arrayBuffer();
@@ -2202,54 +2390,68 @@ const ChatMessage = ({ message, selectedModel, onMessageDelete, onMessageEdit }:
         }
       });
 
-      // 2. Ожидаем чанки последовательно и сразу планируем их воспроизведение
-      // Это позволяет начать играть первый чанк, как только он готов, 
-      // пока остальные догружаются в фоне параллельно.
+      // 5. Ожидаем результаты ПО ОЧЕРЕДИ и планируем воспроизведение сразу
+      // Так как генерация выше запущена параллельно через map, первый чанк 
+      // начнет играть моментально, как только придет ответ от сервера.
       for (let i = 0; i < chunks.length; i++) {
-        const result = await chunkPromises[i];
-        
-        if (result && result.audioBuffer) {
-          const { audioBuffer } = result;
-          const source = audioContext.createBufferSource();
-          source.buffer = audioBuffer;
-          source.connect(audioContext.destination);
-
-          // ✅ Дополнительная проверка перед воспроизведением
-          if (audioContext.state === 'suspended') {
-            console.warn('⚠️ AudioContext still suspended before playback, resuming...');
-            await audioContext.resume();
-          }
-
-          // Планируем запуск (минимум - текущее время контекста)
-          const startTime = Math.max(scheduledTime, audioContext.currentTime);
-          source.start(startTime);
+        try {
+          console.log(`⏳ Waiting for chunk ${i + 1}/${chunks.length}...`);
+          const result = await chunkPromises[i];
           
-          // Обновляем время для следующего чанка
-          scheduledTime = startTime + audioBuffer.duration;
-          audioQueue.push(source);
+          if (result && result.audioBuffer) {
+            const { audioBuffer, index } = result;
+            const source = audioContext.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(audioContext.destination);
 
-          // Скрываем индикатор загрузки после первого чанка
-          if (i === 0) {
-            setIsGeneratingTTS(false);
-            console.log('🔊 First chunk playback scheduled');
-          }
+            if (audioContext.state === 'suspended') {
+              await audioContext.resume();
+            }
 
-          // Если это последний чанк, вешаем обработчик завершения
-          if (i === chunks.length - 1) {
-            source.onended = () => {
-              console.log('✅ All audio playback completed');
+            // Планируем запуск (минимум - текущее время контекста)
+            const startTime = Math.max(scheduledTime, audioContext.currentTime);
+            source.start(startTime);
+            
+            // Обновляем время для следующего чанка
+            scheduledTime = startTime + audioBuffer.duration;
+            audioQueue.push(source);
+
+            // Скрываем индикатор загрузки после начала воспроизведения первого чанка
+            if (index === 0) {
+              setIsGeneratingTTS(false);
+              console.log('🔊 First chunk playback started');
+            }
+
+            console.log(`✅ Chunk ${index + 1} scheduled for ${startTime.toFixed(2)}s (duration: ${audioBuffer.duration.toFixed(2)}s)`);
+
+            // Если это последний чанк, вешаем обработчик завершения
+            if (index === chunks.length - 1) {
+              source.onended = () => {
+                console.log('✅ All audio playback completed');
+                setIsPlayingAudio(false);
+                audioQueue.forEach(s => s.disconnect());
+                audioContext.close().catch(err => console.error('Error closing AudioContext:', err));
+              };
+            }
+          } else {
+            console.warn(`⚠️ Chunk ${i + 1} returned no data`);
+            if (i === 0) setIsGeneratingTTS(false);
+            
+            if (i === chunks.length - 1 && audioQueue.length === 0) {
+              setIsGeneratingTTS(false);
               setIsPlayingAudio(false);
-              audioQueue.forEach(s => s.disconnect());
-              // Закрываем AudioContext после завершения воспроизведения
               audioContext.close().catch(err => console.error('Error closing AudioContext:', err));
-            };
+            }
           }
-        } else if (i === chunks.length - 1 && audioQueue.length === 0) {
-          // Если последний чанк не удался и ничего не было проиграно
-          setIsGeneratingTTS(false);
-          setIsPlayingAudio(false);
-          // Закрываем AudioContext если ничего не воспроизводилось
-          audioContext.close().catch(err => console.error('Error closing AudioContext:', err));
+        } catch (err) {
+          console.error(`❌ Error processing chunk ${i + 1}:`, err);
+          if (i === 0) setIsGeneratingTTS(false);
+          
+          if (i === chunks.length - 1 && audioQueue.length === 0) {
+            setIsGeneratingTTS(false);
+            setIsPlayingAudio(false);
+            audioContext.close().catch(err => console.error('Error closing AudioContext:', err));
+          }
         }
       }
 

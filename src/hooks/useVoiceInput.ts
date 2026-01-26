@@ -78,7 +78,7 @@ interface UseVoiceInputOptions {
 interface UseVoiceInputReturn {
   isRecording: boolean;
   isSupported: boolean;
-  isIOS: boolean;
+  isAppleDevice: boolean;
   startRecording: () => Promise<boolean>;
   stopRecording: () => void;
   toggleRecording: () => void;
@@ -107,12 +107,13 @@ export const useVoiceInput = ({
   // watchdog, чтобы isStarting не мог зависнуть
   const startTimeoutRef = useRef<number | null>(null);
 
-  const isIOS = useMemo(() => {
+  const isAppleDevice = useMemo(() => {
     if (typeof navigator === "undefined") return false;
     const ua = navigator.userAgent || "";
-    const iOS = /iPad|iPhone|iPod/.test(ua);
+    const isMac = /Macintosh|MacIntel|MacPPC|Mac68K/.test(ua);
+    const isIOS = /iPad|iPhone|iPod/.test(ua);
     const iPadOS13Plus = navigator.platform === "MacIntel" && (navigator as any).maxTouchPoints > 1;
-    return iOS || iPadOS13Plus;
+    return isMac || isIOS || iPadOS13Plus;
   }, []);
 
   useEffect(() => {
@@ -145,8 +146,11 @@ export const useVoiceInput = ({
     }
 
     const rec: SpeechRecognition = new Ctor();
-    rec.continuous = true; // Изменяем на true для лучшего захвата
-    rec.interimResults = true; // Включаем промежуточные результаты
+    // На устройствах Apple (iOS и macOS) continuous режим часто приводит к ошибке 1107, 
+    // а также Safari требует немедленного вызова start() без await в цепочке.
+    rec.continuous = !isAppleDevice; 
+    // Отключаем interimResults для Apple для повышения стабильности
+    rec.interimResults = !isAppleDevice;
     rec.lang = lang;
 
     rec.onstart = () => {
@@ -201,18 +205,22 @@ export const useVoiceInput = ({
 
       if (ignoreErrorsRef.current) return;
 
-      // aborted при stop/blur на iOS — не эскалируем
-      if (code === "aborted" && (stopRequestedRef.current || isIOS)) {
-        hardResetFlags();
-        return;
+      // aborted при stop/blur на устройствах Apple — не эскалируем, если мы сами просили остановить
+      if (code === "aborted") {
+        if (stopRequestedRef.current) {
+          hardResetFlags();
+          return;
+        }
+        // Если это ошибка 1107 или системный сброс без нашей просьбы
+        console.warn("🎤 System aborted recognition (Apple device issue 1107 possible)");
       }
 
       hardResetFlags();
-      onErrorRef.current?.(code, msg);
+      onErrorRef.current?.(code, msg || (code === "aborted" ? "Сбой диктовки Apple. Попробуйте нажать еще раз или проверьте настройки Siri." : undefined));
     };
 
     return rec;
-  }, [lang, isIOS]);
+  }, [lang, isAppleDevice]);
 
   // Создаём recognition только при смене lang (а не при каждом рендере)
   useEffect(() => {
@@ -265,7 +273,65 @@ export const useVoiceInput = ({
       return false;
     }
 
-    // Check if mediaDevices API is available
+    if (isAppleDevice) {
+      // Для Apple/Safari создаем НОВЫЙ экземпляр прямо здесь и сейчас,
+      // так как Safari может блокировать переиспользование "старых" объектов диктовки
+      // или требовать создания в том же стеке вызова, что и клик.
+      try {
+        const w = window as any;
+        const Ctor = w.SpeechRecognition || w.webkitSpeechRecognition;
+        if (!Ctor) throw new Error("SpeechRecognition not supported");
+
+        const appleRec = new Ctor();
+        appleRec.continuous = false; // Строго false для стабильности на Apple
+        appleRec.interimResults = false; // Отключаем промежуточные результаты
+        appleRec.lang = lang;
+
+        appleRec.onstart = () => {
+          console.log("🎤 Apple/Safari: Recognition started");
+          isStartingRef.current = false;
+          setIsRecording(true);
+          clearStartTimeout();
+        };
+
+        appleRec.onerror = (event: any) => {
+          const code = event.error;
+          console.error("🎤 Apple/Safari: Recognition error:", code, event);
+          hardResetFlags();
+          if (code !== 'aborted') {
+            onErrorRef.current?.(code, "Сбой диктовки Apple. Попробуйте еще раз.");
+          }
+        };
+
+        appleRec.onend = () => {
+          console.log("🎤 Apple/Safari: Recognition ended");
+          hardResetFlags();
+        };
+
+        appleRec.onresult = (event: any) => {
+          const transcript = event.results[0][0].transcript;
+          console.log("🎤 Apple/Safari: Result received:", transcript);
+          if (transcript) {
+            onTranscriptRef.current?.(transcript.trim());
+          }
+        };
+
+        isStartingRef.current = true;
+        stopRequestedRef.current = false;
+        recognitionRef.current = appleRec; // Сохраняем ссылку для stop()
+        
+        console.log("🎤 Apple/Safari: Calling start() on fresh instance");
+        appleRec.start();
+        return true;
+      } catch (e: any) {
+        console.error("🎤 Apple/Safari: Emergency start failed:", e);
+        hardResetFlags();
+        onErrorRef.current?.("start-failed", "Не удалось запустить диктовку");
+        return false;
+      }
+    }
+
+    // Для остальных (Chrome/Android) можно оставить проверку микрофона
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       console.error("🎤 MediaDevices API is not available");
       onErrorRef.current?.("not-allowed", "Доступ к микрофону недоступен. Используйте HTTPS или другой браузер.");
@@ -289,6 +355,13 @@ export const useVoiceInput = ({
       stopRequestedRef.current = false;
 
       clearStartTimeout();
+      
+      // На устройствах Apple добавляем небольшую задержку перед реальным стартом, 
+      // чтобы аудио-сессия успела инициализироваться
+      if (isAppleDevice) {
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+
       // Увеличиваем таймаут до 3 секунд для медленных устройств
       startTimeoutRef.current = window.setTimeout(() => {
         if (isStartingRef.current && !isRecording) {
@@ -341,7 +414,7 @@ export const useVoiceInput = ({
   return {
     isSupported,
     isRecording,
-    isIOS,
+    isAppleDevice,
     startRecording,
     stopRecording,
     toggleRecording,

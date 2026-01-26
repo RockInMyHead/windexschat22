@@ -267,6 +267,12 @@ const updateUserBalanceStmt = db.prepare(`
   WHERE id = ?
 `);
 
+const updateUserProfileStmt = db.prepare(`
+  UPDATE users
+  SET username = ?, email = ?, updated_at = ?
+  WHERE id = ?
+`);
+
 // Баланс / списание фиксированной комиссии
 const getUserBalanceStmt = db.prepare(`
   SELECT balance
@@ -559,6 +565,12 @@ export class DatabaseService {
   static updateUserBalance(userId, amount) {
     const now = Date.now();
     updateUserBalanceStmt.run(amount, now, userId);
+  }
+
+  static updateUser(userId, { username, email }) {
+    const now = Date.now();
+    const result = updateUserProfileStmt.run(username, email, now, userId);
+    return result.changes > 0;
   }
 
   static getUserBalance(userId) {

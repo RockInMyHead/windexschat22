@@ -7,7 +7,6 @@ import ChatMessage from "@/components/ChatMessage";
 import ChatHeader from "@/components/ChatHeader";
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSummaryModal } from "@/components/ChatSummaryModal";
-import { TokenCostDisplay } from "@/components/TokenCostDisplay";
 import { BtcWidget } from "@/components/BtcWidget";
 import { WebsiteArtifactCard } from "@/components/WebsiteArtifactCard";
 import { WebsiteExecutionProgress } from "@/components/WebsiteExecutionProgress";
@@ -20,7 +19,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { type PlanStep, type TokenCost } from "@/lib/openai";
+import { type PlanStep } from "@/lib/openai";
 import { apiClient, type Message } from "@/lib/api";
 import { FileProcessor } from "@/lib/fileProcessor";
 import { useAuth } from "@/contexts/AuthContext";
@@ -59,7 +58,6 @@ const Chat = () => {
   const [planningCompleted, setPlanningCompleted] = useState(false);
   const [searchProgress, setSearchProgress] = useState<string[]>([]);
   const [thinkingMessages, setThinkingMessages] = useState<string[]>([]);
-  const [lastTokenCost, setLastTokenCost] = useState<TokenCost | null>(null);
   const [marketWidget, setMarketWidget] = useState<MarketWidgetState | null>(null);
   const [internetEnabled, setInternetEnabled] = useState<boolean>(() => {
     // Загружаем настройку из localStorage
@@ -111,7 +109,6 @@ const Chat = () => {
       setIsPlanning(isPlanning);
     },
     onSearchProgress: setSearchProgress,
-    onTokenCost: setLastTokenCost,
     onBalanceUpdate: () => {
       console.log('🔄 Refreshing balance after successful request...');
       balance.refreshBalance();
@@ -655,7 +652,6 @@ const Chat = () => {
       setPlanningCompleted(false);
       setSearchProgress([]);
       setThinkingMessages([]);
-      setLastTokenCost(null);
       setMarketWidget(null); // Сбрасываем market widget
       artifacts.resetArtifacts(); // Очищаем артефакты
 
@@ -683,7 +679,6 @@ const Chat = () => {
       setIsPlanning(false);
       setPlanningCompleted(false);
       setThinkingMessages([]);
-      setLastTokenCost(null);
       setMarketWidget(null); // Сбрасываем market widget
       artifacts.resetArtifacts(); // Очищаем артефакты
 
@@ -933,15 +928,6 @@ const Chat = () => {
               <div ref={scroll.messagesEndRef} />
             </div>
           </div>
-
-          {/* Token cost display */}
-          {lastTokenCost && (
-            <div className="px-4 py-2 border-t bg-secondary/20">
-              <TokenCostDisplay
-                tokenCost={lastTokenCost}
-              />
-            </div>
-          )}
 
           {/* Input area */}
           <div className="w-full border-t border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">

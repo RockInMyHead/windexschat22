@@ -13,6 +13,7 @@ interface AuthContextType {
   isLoading: boolean;
   login: (user: User) => void;
   logout: () => void;
+  updateUser: (userData: Partial<User>) => void;
   showAuthModal: boolean;
   setShowAuthModal: (show: boolean) => void;
   pendingMessage: string | null;
@@ -47,7 +48,11 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     const boot = async () => {
       try {
         const me = await apiClient.me();
-        setUser(me);
+        // Map username from API to name for frontend consistency
+        setUser({
+          ...me,
+          name: me.username || me.name || 'Пользователь'
+        });
         setIsAuthenticated(true);
         setShowAuthModal(false);
         console.log('✅ AuthContext: User restored from session:', me);
@@ -84,6 +89,11 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     console.log('✅ AuthContext: User logged in:', userData.id);
   };
 
+  const updateUser = (userData: Partial<User>) => {
+    setUser(prev => prev ? { ...prev, ...userData } : null);
+    console.log('✅ AuthContext: User updated:', userData);
+  };
+
   const logout = async () => {
     try {
       await apiClient.logout();
@@ -102,6 +112,7 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     isLoading,
     login,
     logout,
+    updateUser,
     showAuthModal,
     setShowAuthModal,
     pendingMessage,

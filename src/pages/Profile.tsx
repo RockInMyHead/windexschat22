@@ -8,10 +8,13 @@ import { ArrowLeft, User, Mail, Key, Crown, CreditCard, Calendar, Check, LogOut 
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { WalletDashboard } from "@/components/WalletDashboard";
+import { apiClient } from "@/lib/api";
+import { useToast } from "@/hooks/use-toast";
 
 const Profile = () => {
   const navigate = useNavigate();
-  const { user, logout } = useAuth();
+  const { user, logout, updateUser } = useAuth();
+  const { toast } = useToast();
 
   // Состояние для модальных окон (оставлено для совместимости)
   const [showPlanModal, setShowPlanModal] = useState(false);
@@ -100,9 +103,37 @@ const Profile = () => {
   ];
 
   // Обработчики кнопок
-  const handleSaveProfile = () => {
-    alert("Профиль сохранен успешно!");
-    // Здесь можно добавить логику сохранения в базу данных или API
+  const handleSaveProfile = async () => {
+    try {
+      if (!user) return;
+
+      console.log('👤 Profile.tsx: Saving profile...', userProfile);
+
+      const result = await apiClient.updateProfile({
+        username: userProfile.name,
+        email: userProfile.email
+      });
+
+      console.log('✅ Profile.tsx: Profile saved:', result);
+
+      // Обновляем глобальное состояние пользователя
+      updateUser({
+        name: result.username,
+        email: result.email
+      });
+
+      toast({
+        title: "Профиль сохранен",
+        description: "Ваши данные успешно обновлены",
+      });
+    } catch (error) {
+      console.error('❌ Profile.tsx: Failed to save profile:', error);
+      toast({
+        title: "Ошибка сохранения",
+        description: "Не удалось обновить данные профиля",
+        variant: "destructive",
+      });
+    }
   };
 
   const handleChangePlan = () => {

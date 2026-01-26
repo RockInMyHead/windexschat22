@@ -888,6 +888,54 @@ app.get('/api/me', requireAuth, (req, res) => {
   res.json(user);
 });
 
+// Обновить профиль текущего пользователя
+app.patch('/api/me', requireAuth, (req, res) => {
+  try {
+    const { username, email } = req.body;
+    const userId = req.user.id;
+
+    console.log(`👤 Updating user profile:`, { userId, username, email });
+
+    if (!username && !email) {
+      return res.status(400).json({ error: 'Username or email is required' });
+    }
+
+    // Получаем текущие данные пользователя
+    const currentUser = DatabaseService.getUserById(userId);
+    if (!currentUser) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Подготавливаем новые данные (используем текущие если не переданы новые)
+    const newUsername = username || currentUser.username;
+    const newEmail = email || currentUser.email;
+
+    // Проверяем уникальность если email или username меняются
+    if (newEmail !== currentUser.email) {
+      const userWithEmail = DatabaseService.getUserByEmail(newEmail);
+      if (userWithEmail && userWithEmail.id !== userId) {
+        return res.status(400).json({ error: 'Email already in use' });
+      }
+    }
+
+    const success = DatabaseService.updateUser(userId, { 
+      username: newUsername, 
+      email: newEmail 
+    });
+
+    if (success) {
+      const updatedUser = DatabaseService.getUserById(userId);
+      console.log('✅ User profile updated successfully:', updatedUser.id);
+      res.json(updatedUser);
+    } else {
+      res.status(500).json({ error: 'Failed to update profile' });
+    }
+  } catch (error) {
+    console.error('❌ Update profile error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Выйти из системы
 app.post('/api/logout', (req, res) => {
   req.session.destroy(() => res.json({ ok: true }));
@@ -4075,10 +4123,11 @@ async function convertNumbersToWords(text) {
 app.post('/api/tts', async (req, res) => {
   console.log('🔊 /api/tts endpoint called!', { body: req.body, path: req.path, method: req.method });
   try {
-    let { text, model = 'silero_ru', voice = 'eugene', speed = 1.0, emotion = 'neutral' } = req.body;
+    let { text, model = 'silero_ru', voice = 'eugene', speed = 1.0, emotion = 'neutral', skipConversion = false } = req.body;
     
-    // Конвертируем цифры в слова перед отправкой в TTS
-    if (text && typeof text === 'string' && /\d/.test(text)) {
+    // Конвертируем цифры в слова перед отправкой в TTS, если не просили пропустить
+    if (!skipConversion && text && typeof text === 'string' && /\d/.test(text)) {
+      console.log('🔢 Converting numbers to words for TTS chunk...');
       text = await convertNumbersToWords(text);
     }
 
@@ -4089,7 +4138,7 @@ app.post('/api/tts', async (req, res) => {
     console.log(`🔊 POST /api/tts | Text: "${text.substring(0, 50)}..." | Model: ${model} | Voice: ${voice}`);
 
     // Используем HTTP запрос к voice-backend TTS сервису (если запущен)
-    const ttsBackendUrl = process.env.TTS_BACKEND_URL || 'http://127.0.0.1:8002';
+    const ttsBackendUrl = process.env.TTS_BACKEND_URL || 'http://127.0.0.1:8003';
     
     try {
       // Создаем AbortController для таймаута
@@ -4168,6 +4217,21 @@ app.use("/api", (err, req, res, next) => {
 app.get("/rum", (req, res) => res.status(204).end());
 app.post("/rum", (req, res) => res.status(204).end());
 app.all(/^\/rum(\/.*)?$/, (req, res) => res.status(204).end());
+
+// Utility endpoint for number conversion
+app.post('/api/utils/convert-numbers', async (req, res) => {
+  try {
+    const { text } = req.body;
+    if (!text) return res.status(400).json({ error: 'Text is required' });
+    
+    console.log('🔢 Bulk converting numbers to words...');
+    const convertedText = await convertNumbersToWords(text);
+    res.json({ text: convertedText });
+  } catch (error) {
+    console.error('❌ Bulk conversion error:', error);
+    res.status(500).json({ error: 'Conversion failed' });
+  }
+});
 
 // Test route
 app.get('/api/test', (req, res) => {

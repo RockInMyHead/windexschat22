@@ -883,16 +883,16 @@ class TTSBackend:
                 await init_tts_http()
                 if _tts_http is not None:
                     print(f"[TTS] Trying HTTP fallback...")
-                    r = await _tts_http.post("/tts_wav", json={
-                        "text": text,
-                        "model": model_to_use,
-                        "voice": voice_to_use,
-                        "speed": settings.speed,
-                        "emotion": settings.emotion,
-                        "pause_between_sentences": settings.pause,
+            r = await _tts_http.post("/tts_wav", json={
+                "text": text,
+                "model": model_to_use,
+                "voice": voice_to_use,
+                "speed": settings.speed,
+                "emotion": settings.emotion,
+                "pause_between_sentences": settings.pause,
                     }, timeout=5.0)
-                    r.raise_for_status()
-                    return r.content
+            r.raise_for_status()
+            return r.content
                 else:
                     raise RuntimeError("TTS HTTP client not initialized")
             except Exception as http_e:
@@ -2374,7 +2374,7 @@ async def handler(ws: WebSocketServerProtocol):
                             await safe_send_locked({"type": "final", **final_json})
 
                             # State transition: user finished speaking, starting LLM
-                            voice_state = VoiceState.IDLE
+                                voice_state = VoiceState.IDLE
                             print("[STATE] USER_SPEAKING → IDLE (final received)")
 
                         # ВАЖНО: Запуск LLM по final из Vosk (rec.Result())

@@ -76,11 +76,18 @@ STT_PID=$!
 echo $STT_PID > ../.stt.pid
 echo "✅ Unified Voice Runtime started (PID: $STT_PID)"
 
+# Start standalone TTS HTTP Server (port 8003)
+echo "🔊 Starting Standalone TTS HTTP Server (port 8003)..."
+python3 tts_server.py > ../logs/tts.log 2>&1 &
+TTS_PID=$!
+echo $TTS_PID > ../.tts.pid
+echo "✅ TTS HTTP Server started (PID: $TTS_PID)"
+
 echo ""
 echo "🎉 Voice Backend is running!"
 echo ""
 echo "📊 Services:"
-echo "   • TTS Service:  http://127.0.0.1:8002"
+echo "   • TTS Service:  http://127.0.0.1:8003"
 echo "   • STT Backend:  ws://127.0.0.1:2700"
 echo "   • Health API:   http://127.0.0.1:8081"
 echo ""
