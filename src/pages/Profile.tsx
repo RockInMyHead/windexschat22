@@ -302,17 +302,17 @@ const Profile = () => {
             </DialogHeader>
             <div className="space-y-4">
               {/* Текущий план */}
-              <div className="p-4 bg-green-50 dark:bg-green-950/20 rounded-lg border border-green-200 dark:border-green-800">
+              <div className="p-4 rounded-lg border" style={{ backgroundColor: '#1e983a0d', borderColor: '#1e983a33' }}>
                 <div className="flex items-center justify-between mb-2">
                   <h4 className="font-semibold text-foreground">{currentPlan.name}</h4>
-                  <span className="text-sm bg-green-600 text-white px-2 py-1 rounded-full">
+                  <span className="text-sm text-white px-2 py-1 rounded-full" style={{ backgroundColor: '#1e983a' }}>
                     Текущий план
                   </span>
                 </div>
                 <p className="text-sm text-muted-foreground">
                   {currentPlan.description}
                 </p>
-                <p className="text-sm font-medium text-green-600 dark:text-green-400 mt-1">
+                <p className="text-sm font-medium mt-1" style={{ color: '#1e983a' }}>
                   {currentPlan.price}
                 </p>
               </div>
@@ -321,10 +321,10 @@ const Profile = () => {
               <div className="space-y-3">
                 <h4 className="font-medium text-foreground">Доступные планы:</h4>
 
-                <div className="p-4 border-2 border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-950/20 rounded-lg">
+                <div className="p-4 border-2 rounded-lg" style={{ borderColor: '#1e983a33', backgroundColor: '#1e983a0d' }}>
                   <div className="flex items-center justify-between mb-2">
                     <h5 className="font-semibold">WindexsAI Lite</h5>
-                    <span className="text-sm text-green-600 dark:text-green-400 font-medium">Бесплатно</span>
+                    <span className="text-sm font-medium" style={{ color: '#1e983a' }}>Бесплатно</span>
                   </div>
                   <p className="text-sm text-muted-foreground mb-3">
                     Базовые функции и модель DeepSeek Chat
@@ -492,7 +492,7 @@ const Profile = () => {
                     </div>
                   </div>
                   <div className="text-right">
-                    <span className="text-sm font-medium text-green-600">
+                    <span className="text-sm font-medium" style={{ color: '#1e983a' }}>
                       {payment.status}
                     </span>
                   </div>

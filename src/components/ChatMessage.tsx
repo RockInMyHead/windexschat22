@@ -370,7 +370,10 @@ const CodeBlock = ({ code, language }: { code: string; language?: string }) => {
             <div className="flex items-center gap-2">
               {canExecute && (
                 <button
-                  className="text-gray-400 hover:text-green-400 transition-colors flex-shrink-0 p-1 rounded hover:bg-gray-700/50"
+                  className="text-gray-400 transition-colors flex-shrink-0 p-1 rounded hover:bg-gray-700/50"
+                  style={{ '--hover-color': '#1e983a' } as React.CSSProperties}
+                  onMouseEnter={(e) => e.currentTarget.style.color = '#1e983a'}
+                  onMouseLeave={(e) => e.currentTarget.style.color = '#9ca3af'}
                   onClick={executeCode}
                   title="Выполнить код"
                 >

@@ -252,10 +252,9 @@ export function WalletDashboard({ embedded = false, userId: propUserId }: Wallet
                 <div key={transaction.id} className="flex items-center justify-between p-4 border rounded-lg">
                   <div className="flex items-center gap-3">
                     <div className={`p-2 rounded-full ${
-                      transaction.type === 'deposit' ? 'bg-green-100 text-green-600' :
                       transaction.type === 'spend' ? 'bg-red-100 text-red-600' :
                       'bg-blue-100 text-blue-600'
-                    }`}>
+                    }`} style={transaction.type === 'deposit' ? { backgroundColor: '#1e983a1a', color: '#1e983a' } : {}}>
                       {transaction.type === 'deposit' ? <TrendingUp className="h-4 w-4" /> :
                        transaction.type === 'spend' ? <TrendingDown className="h-4 w-4" /> :
                        <DollarSign className="h-4 w-4" />}

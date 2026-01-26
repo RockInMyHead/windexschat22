@@ -53,13 +53,16 @@ const ChatHeader = ({
             variant="outline"
             size="sm"
             onClick={() => navigate('/profile')}
-            className="gap-2 bg-green-50 hover:bg-green-100 border-green-200"
+            className="gap-2"
+            style={{ backgroundColor: '#1e983a1a', borderColor: '#1e983a33' }}
+            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#1e983a26'}
+            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#1e983a1a'}
             title="Перейти в кошелек"
           >
             {balanceLoading ? (
               <span className="text-xs sm:text-sm">Загрузка...</span>
             ) : (
-              <span className="text-xs sm:text-sm font-medium text-green-700 whitespace-nowrap">
+              <span className="text-xs sm:text-sm font-medium whitespace-nowrap" style={{ color: '#1e983a' }}>
                 {formatBalance(userBalance)}
               </span>
             )}
@@ -100,7 +103,10 @@ const ChatHeader = ({
               variant={voiceCallEnabled ? "default" : "outline"}
               size="sm"
               onClick={onToggleVoiceCall}
-              className={`gap-2 ${voiceCallEnabled ? 'bg-green-600 hover:bg-green-700' : ''}`}
+              className="gap-2"
+              style={voiceCallEnabled ? { backgroundColor: '#1e983a' } : {}}
+              onMouseEnter={(e) => voiceCallEnabled && (e.currentTarget.style.backgroundColor = '#1a7d30')}
+              onMouseLeave={(e) => voiceCallEnabled && (e.currentTarget.style.backgroundColor = '#1e983a')}
               title={voiceCallEnabled ? "Голосовой звонок активен" : "Начать голосовой звонок"}
             >
               <Phone className="h-4 w-4" />

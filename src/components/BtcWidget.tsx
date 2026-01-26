@@ -208,7 +208,7 @@ export const BtcWidget = ({
           </div>
           <div className="flex items-center gap-2 text-sm">
             {priceChange !== 0 && (
-              <div className={`flex items-center gap-1 ${isPositive ? 'text-green-600' : 'text-red-600'}`}>
+              <div className={`flex items-center gap-1 ${isPositive ? '' : 'text-red-600'}`} style={isPositive ? { color: '#1e983a' } : {}}>
                 {isPositive ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
                 {formatChange(priceChange)}
               </div>

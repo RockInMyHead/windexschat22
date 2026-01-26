@@ -40,13 +40,13 @@ export const TokenCostDisplay = ({ tokenCost }: TokenCostDisplayProps) => {
 
         <div className="space-y-1">
           <div className="flex items-center gap-1">
-            <TrendingUp className="w-3 h-3 text-green-500" />
+            <TrendingUp className="w-3 h-3" style={{ color: '#1e983a' }} />
             <span className="text-muted-foreground">Выход:</span>
           </div>
           <div className="font-mono text-xs">
             {tokenCost.outputTokens.toLocaleString()} токенов
           </div>
-          <div className="font-mono text-xs text-green-600">
+          <div className="font-mono text-xs" style={{ color: '#1e983a' }}>
             {formatCost(tokenCost.outputCost)}
           </div>
         </div>

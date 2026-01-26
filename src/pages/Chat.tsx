@@ -833,9 +833,8 @@ const Chat = () => {
                       variant="outline"
                       size="sm"
                       onClick={() => setShowVoiceCall(!showVoiceCall)}
-                      className="text-xs gap-2"
+                      className="text-xs"
                     >
-                      <Phone className="w-3 h-3" />
                       Голосовой звонок
                     </Button>
                   </div>
@@ -911,9 +910,8 @@ const Chat = () => {
                           }`}
                         >
                           <div className={`w-2 h-2 rounded-full mt-1 flex-shrink-0 ${
-                            isCompleted ? 'bg-green-500' :
                             isActive ? 'bg-primary animate-pulse' : 'bg-muted-foreground'
-                          }`} />
+                          }`} style={isCompleted ? { backgroundColor: '#1e983a' } : {}} />
                           <span className="flex-1 whitespace-pre-line">{planText}</span>
                         </div>
                       );

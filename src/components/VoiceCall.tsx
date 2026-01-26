@@ -728,11 +728,11 @@ export const VoiceCall: React.FC<VoiceCallProps> = ({
         <div className="flex items-center gap-2">
           <div className={cn(
             'w-2 h-2 rounded-full',
-            connectionState === 'connected' && 'bg-green-500 animate-pulse',
+            connectionState === 'connected' && 'animate-pulse',
             connectionState === 'connecting' && 'bg-yellow-500',
             connectionState === 'disconnected' && 'bg-gray-400',
             connectionState === 'error' && 'bg-red-500'
-          )} />
+          )} style={connectionState === 'connected' ? { backgroundColor: '#1e983a' } : {}} />
           <span className="text-xs font-medium text-muted-foreground">
             {connectionState === 'connected' && 'AI на связи'}
             {connectionState === 'connecting' && 'Подключение...'}

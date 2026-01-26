@@ -23,7 +23,7 @@ export const WebsiteExecutionProgress: React.FC<WebsiteExecutionProgressProps> =
   const getStatusIcon = (status: ExecutionStep['status']) => {
     switch (status) {
       case 'completed':
-        return <CheckCircle className="w-5 h-5 text-green-500" />;
+        return <CheckCircle className="w-5 h-5" style={{ color: '#1e983a' }} />;
       case 'active':
         return <Loader2 className="w-5 h-5 text-blue-500 animate-spin" />;
       case 'error':
@@ -36,7 +36,7 @@ export const WebsiteExecutionProgress: React.FC<WebsiteExecutionProgressProps> =
   const getStatusColor = (status: ExecutionStep['status']) => {
     switch (status) {
       case 'completed':
-        return 'text-green-700';
+        return '';
       case 'active':
         return 'text-blue-700';
       case 'error':
@@ -61,7 +61,7 @@ export const WebsiteExecutionProgress: React.FC<WebsiteExecutionProgressProps> =
               {getStatusIcon(step.status)}
             </div>
             <div className="flex-1 min-w-0">
-              <div className={`text-sm font-medium ${getStatusColor(step.status)}`}>
+              <div className={`text-sm font-medium ${getStatusColor(step.status)}`} style={step.status === 'completed' ? { color: '#1e983a' } : {}}>
                 {step.label}
               </div>
               {step.error && (
