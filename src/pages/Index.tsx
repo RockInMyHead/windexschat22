@@ -66,18 +66,20 @@ const Index = () => {
           </div>
         )}
 
-        <div className="text-center mb-8 sm:mb-12">
+        <div className="text-center">
           <img 
             src="/logo.png" 
             alt="WindexsAI" 
-            className="h-10 w-auto sm:h-14 md:h-16 max-w-full object-contain mx-auto mb-2 sm:mb-3"
+            className="h-10 w-auto sm:h-14 md:h-16 max-w-full object-contain mx-auto"
             style={{ 
               maxWidth: 'min(100%, 350px)',
               height: 'auto',
-              display: 'block'
+              display: 'block',
+              marginTop: '20px',
+              marginBottom: '20px'
             }}
           />
-          <p className="text-lg sm:text-xl md:text-2xl text-foreground/80 px-2">
+          <p className="text-lg sm:text-xl md:text-2xl text-foreground/80 px-2 mt-5">
             Я помогу вам <AnimatedText />
           </p>
         </div>
