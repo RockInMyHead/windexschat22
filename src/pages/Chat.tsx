@@ -260,6 +260,11 @@ const Chat = () => {
       setVoiceRecordingStoppedManually(false); // Сбрасываем флаг
       console.log('🎤 Sending voice transcript on second button press:', transcriptToSend);
       chatSend.sendMessage(transcriptToSend, messages);
+      // Убеждаемся, что запись полностью остановлена после отправки
+      if (voiceInput.isRecording) {
+        console.log('🎤 Force stopping recording after message sent');
+        voiceInput.stopRecording();
+      }
     } else if (!voiceInput.isRecording && !voiceRecordingStoppedManually) {
       // Если запись остановилась автоматически (не вручную) - сбрасываем флаг и очищаем транскрипт
       if (voiceTranscript.trim()) {
@@ -267,7 +272,7 @@ const Chat = () => {
         setVoiceTranscript("");
       }
     }
-  }, [voiceInput.isRecording, voiceTranscript, voiceRecordingStoppedManually, chatSend, messages]);
+  }, [voiceInput.isRecording, voiceTranscript, voiceRecordingStoppedManually, chatSend, messages, voiceInput]);
 
   // Check browser support (only API availability, not permissions)
   const isSpeechRecognitionSupported = (() => {
