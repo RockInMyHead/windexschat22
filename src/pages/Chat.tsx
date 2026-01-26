@@ -119,6 +119,7 @@ const Chat = () => {
   // Voice input state
   const [voiceInputEnabled, setVoiceInputEnabled] = useState(true);
   const [voiceTranscript, setVoiceTranscript] = useState<string>(""); // Сохраняем транскрипт для отправки при втором нажатии
+  const [voiceRecordingStoppedManually, setVoiceRecordingStoppedManually] = useState(false); // Флаг для отслеживания явной остановки записи
 
   // Состояния для резюме
   const [isSummaryModalOpen, setIsSummaryModalOpen] = useState(false);
@@ -252,14 +253,21 @@ const Chat = () => {
 
   // Отправка сообщения при остановке записи (второе нажатие на кнопку)
   useEffect(() => {
-    // Когда запись останавливается и есть сохраненный транскрипт - отправляем сообщение
-    if (!voiceInput.isRecording && voiceTranscript.trim()) {
+    // Отправляем сообщение только если запись была остановлена вручную (второе нажатие)
+    if (!voiceInput.isRecording && voiceTranscript.trim() && voiceRecordingStoppedManually) {
       const transcriptToSend = voiceTranscript;
       setVoiceTranscript(""); // Очищаем транскрипт перед отправкой
+      setVoiceRecordingStoppedManually(false); // Сбрасываем флаг
       console.log('🎤 Sending voice transcript on second button press:', transcriptToSend);
       chatSend.sendMessage(transcriptToSend, messages);
+    } else if (!voiceInput.isRecording && !voiceRecordingStoppedManually) {
+      // Если запись остановилась автоматически (не вручную) - сбрасываем флаг и очищаем транскрипт
+      if (voiceTranscript.trim()) {
+        console.log('🎤 Recording stopped automatically, clearing transcript without sending');
+        setVoiceTranscript("");
+      }
     }
-  }, [voiceInput.isRecording, voiceTranscript, chatSend, messages]);
+  }, [voiceInput.isRecording, voiceTranscript, voiceRecordingStoppedManually, chatSend, messages]);
 
   // Check browser support (only API availability, not permissions)
   const isSpeechRecognitionSupported = (() => {
@@ -1003,8 +1011,8 @@ const Chat = () => {
                       return;
                     }
                     if (voiceInput.isRecording) {
-                      // Второе нажатие - останавливаем запись
-                      // Отправка сообщения произойдет автоматически через useEffect при изменении isRecording
+                      // Второе нажатие - останавливаем запись и помечаем как ручную остановку
+                      setVoiceRecordingStoppedManually(true); // Устанавливаем флаг для отправки сообщения
                       voiceInput.stopRecording();
                     } else {
                       // Первое нажатие - начинаем запись
@@ -1013,6 +1021,7 @@ const Chat = () => {
                         console.log('🎤 Starting new recording, clearing previous transcript');
                         setVoiceTranscript("");
                       }
+                      setVoiceRecordingStoppedManually(false); // Сбрасываем флаг при начале новой записи
                       setVoiceInputEnabled(false);
                         voiceInput.startRecording().then((started) => {
                       if (!started) {
@@ -1022,6 +1031,7 @@ const Chat = () => {
                       // Auto-stop after 30 seconds for safety
                       setTimeout(() => {
                         if (voiceInput.isRecording) {
+                          // При авто-остановке НЕ устанавливаем флаг voiceRecordingStoppedManually
                           voiceInput.stopRecording();
                           setVoiceInputEnabled(true);
                         }

@@ -191,10 +191,12 @@ export const useVoiceInput = ({
         console.log("🎤 Speech recognition update:", { final: finalTranscript, interim: interimTranscript });
       }
 
+      // НЕ вызываем onTranscript автоматически при финальном результате
+      // Вместо этого сохраняем его в lastTranscriptRef и вызовем только при явной остановке
       if (finalTranscript.trim()) {
-        console.log("🎤 Speech recognition result (final):", finalTranscript.trim());
-        onTranscriptRef.current?.(finalTranscript.trim());
-        lastTranscriptRef.current = ""; // Сбрасываем, так как уже отправили финальный
+        console.log("🎤 Speech recognition result (final) - saved, will send on manual stop:", finalTranscript.trim());
+        // НЕ вызываем onTranscript здесь - только сохраняем
+        // onTranscript будет вызван в rec.onend при stopRequestedRef.current === true
       }
     };
 
