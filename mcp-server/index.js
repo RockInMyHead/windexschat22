@@ -8,7 +8,17 @@ const PORT = process.env.MCP_PORT || 8002;
 
 // Middleware
 app.use(cors({
-  origin: ['https://ai.windexs.ru', 'https://www.ai.windexs.ru', 'http://ai.windexs.ru', 'http://www.ai.windexs.ru'],
+  origin: [
+    'https://ai.windexs.ru', 
+    'https://www.ai.windexs.ru', 
+    'http://ai.windexs.ru', 
+    'http://www.ai.windexs.ru',
+    'http://localhost:8081',  // Для локальной разработки (Vite)
+    'http://localhost:5173',  // Для Vite dev server
+    'http://127.0.0.1:8081',  // Для локальной разработки
+    'http://127.0.0.1:5173',  // Для Vite dev server
+    'http://localhost:1062'   // Для основного backend сервера
+  ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']

@@ -2379,10 +2379,10 @@ coingecko_id=${coinGeckoId}`;
   }
 });
 
-// MCP server proxy for web search - использует локальный поиск вместо внешнего API
+// MCP server proxy for web search - использует реальный Tavily API через MCP сервер
 app.post('/api/mcp/search', async (req, res) => {
   try {
-    const { q: query, max_results = 3 } = req.body;
+    const { q: query, max_results = 5 } = req.body;
     console.log(`🔍 MCP search proxy request | Query: "${query}" | Max results: ${max_results}`);
 
     if (!query || typeof query !== 'string') {
@@ -2390,14 +2390,44 @@ app.post('/api/mcp/search', async (req, res) => {
       return res.status(400).json({ error: 'Query parameter is required' });
     }
 
-    // Используем локальный веб-поиск вместо внешнего API
-    const searchResults = await performWebSearch(query);
-    console.log(`✅ MCP search completed | Query: "${query}" | Results length: ${searchResults.length} chars`);
+    // Пробуем обратиться к реальному MCP серверу на localhost:8002
+    try {
+      const mcpServerUrl = process.env.MCP_SERVER_URL || 'http://localhost:8002';
+      const mcpResponse = await fetch(`${mcpServerUrl}/search`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          query: query, // MCP сервер ожидает 'query', а не 'q'
+          max_results: max_results || 5
+        })
+      });
 
-    res.json({
-      answer: searchResults,
-      results: [] // Для совместимости с интерфейсом
-    });
+      if (mcpResponse.ok) {
+        const mcpData = await mcpResponse.json();
+        console.log(`✅ MCP search completed | Query: "${query}" | Results: ${mcpData.results?.length || 0}`);
+        
+        return res.json({
+          query: mcpData.query || query,
+          results: mcpData.results || [],
+          answer: mcpData.answer || null
+        });
+      } else {
+        const errorText = await mcpResponse.text();
+        console.error(`❌ MCP server error: ${mcpResponse.status} - ${errorText}`);
+        throw new Error(`MCP server returned ${mcpResponse.status}`);
+      }
+    } catch (mcpError) {
+      console.error('❌ MCP server not available, using fallback:', mcpError.message);
+      // Fallback к локальному поиску если MCP сервер недоступен
+      const searchResults = await performWebSearch(query);
+      
+      return res.json({
+        answer: searchResults,
+        results: [] // Для совместимости с интерфейсом
+      });
+    }
 
   } catch (error) {
     console.error(`❌ MCP proxy error | Query: "${req.body?.q || 'none'}" | Error: ${error.message || error}`);
