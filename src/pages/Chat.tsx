@@ -1021,11 +1021,13 @@ const Chat = () => {
                         setVoiceInputEnabled(true);
                         return;
                       }
-                      // Auto-stop after 5 seconds for safety
+                      // Auto-stop after 30 seconds for safety
                       setTimeout(() => {
-                        voiceInput.stopRecording();
-                        setVoiceInputEnabled(true);
-                      }, 5000);
+                        if (voiceInput.isRecording) {
+                          voiceInput.stopRecording();
+                          setVoiceInputEnabled(true);
+                        }
+                      }, 30000);
                         }).catch((error) => {
                           console.error('🎤 Failed to start recording:', error);
                           setVoiceInputEnabled(true);
