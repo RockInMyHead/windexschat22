@@ -567,16 +567,31 @@ export const VoiceCall: React.FC<VoiceCallProps> = ({
 
       streamRef.current = stream;
 
-      // Create AudioContext
-      const audioContext = new AudioContext({ sampleRate: 16000 });
+      // Create AudioContext with native sample rate (browsers may not support 16kHz)
+      // We'll resample to 16kHz in the AudioWorklet
+      const nativeSampleRate = new AudioContext().sampleRate;
+      const audioContext = new AudioContext({ sampleRate: nativeSampleRate });
       audioContextRef.current = audioContext;
 
       const source = audioContext.createMediaStreamSource(stream);
 
-      // Load AudioWorklet
-      await audioContext.audioWorklet.addModule('/audioWorklet.js');
-      const workletNode = new AudioWorkletNode(audioContext, 'pcm-processor');
-      workletNodeRef.current = workletNode;
+      // Load AudioWorklet with error handling
+      try {
+        console.log('📦 Loading AudioWorklet module...');
+        await audioContext.audioWorklet.addModule('/audioWorklet.js');
+        console.log('✅ AudioWorklet module loaded successfully');
+        
+        // Small delay to ensure processor is registered
+        await new Promise(resolve => setTimeout(resolve, 50));
+        
+        console.log('🔧 Creating AudioWorkletNode...');
+        const workletNode = new AudioWorkletNode(audioContext, 'pcm-processor');
+        workletNodeRef.current = workletNode;
+        console.log('✅ AudioWorkletNode created successfully');
+      } catch (workletError: any) {
+        console.error('❌ AudioWorklet error:', workletError);
+        throw new Error(`Failed to load AudioWorklet: ${workletError.message}. Make sure audioWorklet.js is accessible at /audioWorklet.js`);
+      }
 
       // Initialize worklet with actual sample rate
       workletNode.port.postMessage({
