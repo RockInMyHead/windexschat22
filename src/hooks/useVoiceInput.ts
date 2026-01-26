@@ -91,6 +91,8 @@ export const useVoiceInput = ({
 }: UseVoiceInputOptions = {}): UseVoiceInputReturn => {
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const lastTranscriptRef = useRef<string>("");
+  // Для Apple/Safari: храним текст из завершенных сессий (предыдущие перезапуски)
+  const previousSessionsTextRef = useRef<string>("");
 
   const [isSupported, setIsSupported] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -157,7 +159,11 @@ export const useVoiceInput = ({
 
     rec.onstart = () => {
       console.log("🎤 Speech recognition started successfully");
-      lastTranscriptRef.current = ""; // Сброс при старте
+      // Сбрасываем только для обычных браузеров (не Apple)
+      if (!isAppleDevice) {
+        lastTranscriptRef.current = "";
+        previousSessionsTextRef.current = "";
+      }
       clearStartTimeout();
       isStartingRef.current = false;
       stopRequestedRef.current = false;
@@ -179,7 +185,8 @@ export const useVoiceInput = ({
       let interimTranscript = "";
       let finalTranscript = "";
 
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
+      // Собираем ВСЕ результаты из текущего события (браузер присылает накопительно)
+      for (let i = 0; i < event.results.length; ++i) {
         const transcript = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
           finalTranscript += transcript;
@@ -188,35 +195,21 @@ export const useVoiceInput = ({
         }
       }
 
-      // Обновляем транскрипт с учетом промежуточных результатов для быстрого отображения
-      const currentText = (finalTranscript || interimTranscript).trim();
-      if (currentText) {
-        // Если есть финальный результат, используем его, иначе промежуточный
-        if (finalTranscript.trim()) {
-          lastTranscriptRef.current = finalTranscript.trim();
-        } else if (interimTranscript.trim()) {
-          // Для промежуточных результатов добавляем к существующему финальному
-          const existingFinal = lastTranscriptRef.current.split(' ').filter(w => w.length > 0);
-          const interimWords = interimTranscript.trim().split(' ').filter(w => w.length > 0);
-          // Объединяем, убирая дубликаты
-          const combined = [...existingFinal, ...interimWords].join(' ');
-          lastTranscriptRef.current = combined;
-        }
-        console.log("🎤 Speech recognition update:", { final: finalTranscript, interim: interimTranscript, current: lastTranscriptRef.current });
+      // Браузер присылает промежуточные результаты накопительно (весь текст до сих пор)
+      // Поэтому мы просто используем их как есть, без добавления к существующему
+      const currentSessionText = (finalTranscript + interimTranscript).trim();
+      
+      if (currentSessionText) {
+        // Для обычных браузеров (не Apple) просто используем текущий текст сессии
+        lastTranscriptRef.current = currentSessionText;
+        console.log("🎤 Speech recognition update:", { 
+          final: finalTranscript, 
+          interim: interimTranscript, 
+          current: lastTranscriptRef.current 
+        });
         
-        // Вызываем onTranscript с промежуточным результатом для немедленного отображения
-        // Но только если это промежуточный результат (не финальный)
-        if (interimTranscript.trim() && !finalTranscript.trim()) {
-          onTranscriptRef.current?.(lastTranscriptRef.current);
-        }
-      }
-
-      // Финальный результат сохраняем, но не отправляем автоматически
-      if (finalTranscript.trim()) {
-        console.log("🎤 Speech recognition result (final) - saved, will send on manual stop:", finalTranscript.trim());
-        lastTranscriptRef.current = finalTranscript.trim();
-        // Обновляем транскрипт с финальным результатом
-        onTranscriptRef.current?.(finalTranscript.trim());
+        // Вызываем onTranscript для немедленного отображения
+        onTranscriptRef.current?.(currentSessionText);
       }
     };
 
@@ -315,6 +308,8 @@ export const useVoiceInput = ({
           isRecordingRef.current = true;
           setIsRecording(true);
           clearStartTimeout();
+          // При старте новой сессии сбрасываем только текущий транскрипт сессии
+          // previousSessionsTextRef сохраняем для накопления между перезапусками
         };
 
         appleRec.onerror = (event: any) => {
@@ -328,17 +323,27 @@ export const useVoiceInput = ({
 
         appleRec.onend = () => {
           console.log("🎤 Apple/Safari: Recognition ended", { stopRequested: stopRequestedRef.current, isRecording: isRecordingRef.current });
+          
           // Если была остановка вручную, отправляем накопленный транскрипт и завершаем
           if (stopRequestedRef.current) {
             if (lastTranscriptRef.current.trim()) {
               console.log("🎤 Apple/Safari: Sending accumulated transcript on manual stop (main):", lastTranscriptRef.current.trim());
               onTranscriptRef.current?.(lastTranscriptRef.current.trim());
             }
+            // Сбрасываем все при ручной остановке
+            previousSessionsTextRef.current = "";
+            lastTranscriptRef.current = "";
             hardResetFlags();
             return;
           }
-          // Если запись не была остановлена вручную, перезапускаем для продолжения записи
+          
+          // Если запись не была остановлена вручную, сохраняем финальный текст этой сессии
+          // и перезапускаем для продолжения записи
           if (isRecordingRef.current) {
+            // Сохраняем финальный текст текущей сессии для следующего перезапуска
+            if (lastTranscriptRef.current.trim()) {
+              previousSessionsTextRef.current = lastTranscriptRef.current.trim();
+            }
             console.log("🎤 Apple/Safari: Auto-restarting recognition to continue recording");
             // Небольшая задержка перед перезапуском для стабильности
             setTimeout(() => {
@@ -404,33 +409,37 @@ export const useVoiceInput = ({
                   };
                   
                   newAppleRec.onresult = (event: any) => {
-                    let interimTranscript = "";
-                    let finalTranscript = "";
+                    let sessionFinal = "";
+                    let sessionInterim = "";
 
+                    // Собираем результаты текущей сессии
                     for (let i = 0; i < event.results.length; ++i) {
                       const transcript = event.results[i][0].transcript;
                       if (event.results[i].isFinal) {
-                        finalTranscript += transcript;
+                        sessionFinal += transcript;
                       } else {
-                        interimTranscript += transcript;
+                        sessionInterim += transcript;
                       }
                     }
 
-                    const currentText = (finalTranscript || interimTranscript).trim();
-                    if (currentText) {
-                      if (finalTranscript.trim()) {
-                        // Финальный результат добавляем к накопленному
-                        lastTranscriptRef.current = (lastTranscriptRef.current + " " + finalTranscript.trim()).trim();
-                        console.log("🎤 Apple/Safari: Final result received (restart):", lastTranscriptRef.current);
-                        // Обновляем транскрипт с финальным результатом
-                        onTranscriptRef.current?.(lastTranscriptRef.current);
-                      } else if (interimTranscript.trim()) {
-                        // Промежуточный результат для отображения
-                        const displayText = (lastTranscriptRef.current + " " + interimTranscript.trim()).trim();
-                        console.log("🎤 Apple/Safari: Interim result received (restart):", displayText);
-                        // Вызываем onTranscript с промежуточным результатом для немедленного отображения
-                        onTranscriptRef.current?.(displayText);
-                      }
+                    // Текст текущей сессии (браузер присылает накопительно)
+                    const currentSessionText = (sessionFinal + sessionInterim).trim();
+                    
+                    if (currentSessionText) {
+                      // Объединяем текст из ПРОШЛЫХ сессий с текстом ТЕКУЩЕЙ сессии
+                      const totalText = (previousSessionsTextRef.current + " " + currentSessionText).trim();
+                      lastTranscriptRef.current = totalText;
+                      
+                      console.log("🎤 Apple/Safari: Result received (restart):", {
+                        sessionFinal,
+                        sessionInterim,
+                        currentSession: currentSessionText,
+                        previousSessions: previousSessionsTextRef.current,
+                        total: totalText
+                      });
+                      
+                      // Вызываем onTranscript для немедленного отображения
+                      onTranscriptRef.current?.(totalText);
                     }
                   };
                   
@@ -455,35 +464,37 @@ export const useVoiceInput = ({
         };
 
         appleRec.onresult = (event: any) => {
-          let interimTranscript = "";
-          let finalTranscript = "";
+          let sessionFinal = "";
+          let sessionInterim = "";
 
+          // Собираем результаты текущей сессии
           for (let i = 0; i < event.results.length; ++i) {
             const transcript = event.results[i][0].transcript;
             if (event.results[i].isFinal) {
-              finalTranscript += transcript;
+              sessionFinal += transcript;
             } else {
-              interimTranscript += transcript;
+              sessionInterim += transcript;
             }
           }
 
-          const currentText = (finalTranscript || interimTranscript).trim();
-          if (currentText) {
-            if (finalTranscript.trim()) {
-              lastTranscriptRef.current = finalTranscript.trim();
-              console.log("🎤 Apple/Safari: Final result received:", lastTranscriptRef.current);
-              // Обновляем транскрипт с финальным результатом
-              onTranscriptRef.current?.(finalTranscript.trim());
-            } else if (interimTranscript.trim()) {
-              // Для промежуточных результатов обновляем транскрипт
-              const existingFinal = lastTranscriptRef.current.split(' ').filter(w => w.length > 0);
-              const interimWords = interimTranscript.trim().split(' ').filter(w => w.length > 0);
-              const combined = [...existingFinal, ...interimWords].join(' ');
-              lastTranscriptRef.current = combined;
-              console.log("🎤 Apple/Safari: Interim result received:", lastTranscriptRef.current);
-              // Вызываем onTranscript с промежуточным результатом для немедленного отображения
-              onTranscriptRef.current?.(lastTranscriptRef.current);
-            }
+          // Текст текущей сессии (браузер присылает накопительно)
+          const currentSessionText = (sessionFinal + sessionInterim).trim();
+          
+          if (currentSessionText) {
+            // Объединяем текст из ПРОШЛЫХ сессий с текстом ТЕКУЩЕЙ сессии
+            const totalText = (previousSessionsTextRef.current + " " + currentSessionText).trim();
+            lastTranscriptRef.current = totalText;
+            
+            console.log("🎤 Apple/Safari: Result received:", {
+              sessionFinal,
+              sessionInterim,
+              currentSession: currentSessionText,
+              previousSessions: previousSessionsTextRef.current,
+              total: totalText
+            });
+            
+            // Вызываем onTranscript для немедленного отображения
+            onTranscriptRef.current?.(totalText);
           }
         };
 
