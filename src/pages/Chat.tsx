@@ -785,8 +785,19 @@ const Chat = () => {
             <div className="w-full max-w-5xl mx-auto px-2 sm:px-4 py-2 sm:py-4">
               {messages.length === 0 && (
                 <div className="text-center py-12 sm:py-20 animate-fade-in">
-                  <h2 className="text-2xl sm:text-3xl font-semibold text-foreground mb-4">
-                    Начните разговор с WindexsAI
+                  <h2 className="text-2xl sm:text-3xl font-semibold text-foreground mb-4 flex items-center justify-center gap-2 flex-wrap">
+                    Начните разговор с{' '}
+                    <img 
+                      src="/logo-sidebar.png" 
+                      alt="WindexsAI" 
+                      className="h-6 w-auto sm:h-8 object-contain inline-block"
+                      style={{ 
+                        margin: '0',
+                        padding: '0',
+                        display: 'inline-block',
+                        verticalAlign: 'middle'
+                      }}
+                    />
                   </h2>
                   <p className="text-muted-foreground mb-6 max-w-md mx-auto">
                     Задайте вопрос, загрузите файл или используйте голосовой ввод
