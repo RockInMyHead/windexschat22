@@ -431,7 +431,19 @@ export const useChatSend = ({
         const execState = { done: false, artifactId: null as number | null };
 
         try {
-          await apiClient.saveMessage(Number(sessionIdToUse), "user", messageText);
+          // Сохраняем сообщение и получаем его ID
+          const { messageId: websiteUserMessageId } = await apiClient.saveMessage(Number(sessionIdToUse), "user", messageText);
+          // Обновляем последнее сообщение пользователя в состоянии с полученным ID
+          onMessageUpdate(prev => {
+            const updated = [...prev];
+            for (let i = updated.length - 1; i >= 0; i--) {
+              if (updated[i].role === 'user' && !updated[i].id && updated[i].content === messageText) {
+                updated[i] = { ...updated[i], id: websiteUserMessageId };
+                break;
+              }
+            }
+            return updated;
+          });
 
           console.log('🔧 Calling executeWebsiteStream...');
           setIsExecutingWebsite(true);
