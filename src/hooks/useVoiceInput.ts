@@ -137,6 +137,11 @@ export const useVoiceInput = ({
     stopRequestedRef.current = false;
     isRecordingRef.current = false;
     setIsRecording(false);
+    // Сбрасываем транскрипты только при полном сбросе (не при перезапуске Apple)
+    if (!isAppleDevice) {
+      lastTranscriptRef.current = "";
+      previousSessionsTextRef.current = "";
+    }
   };
 
   const createRecognition = useCallback(() => {
@@ -382,15 +387,28 @@ export const useVoiceInput = ({
                   
                   newAppleRec.onend = () => {
                     console.log("🎤 Apple/Safari: Recognition ended (restart)", { stopRequested: stopRequestedRef.current, isRecording: isRecordingRef.current });
+                    
                     // Если была остановка вручную, отправляем накопленный транскрипт
-                    if (stopRequestedRef.current && lastTranscriptRef.current.trim()) {
-                      console.log("🎤 Apple/Safari: Sending accumulated transcript on manual stop (restart):", lastTranscriptRef.current.trim());
-                      onTranscriptRef.current?.(lastTranscriptRef.current.trim());
+                    if (stopRequestedRef.current) {
+                      if (lastTranscriptRef.current.trim()) {
+                        console.log("🎤 Apple/Safari: Sending accumulated transcript on manual stop (restart):", lastTranscriptRef.current.trim());
+                        onTranscriptRef.current?.(lastTranscriptRef.current.trim());
+                      }
+                      // Сбрасываем все при ручной остановке
+                      previousSessionsTextRef.current = "";
+                      lastTranscriptRef.current = "";
                       hardResetFlags();
                       return;
                     }
-                    // Рекурсивно перезапускаем, если не была остановка вручную
-                    if (!stopRequestedRef.current && isRecordingRef.current) {
+                    
+                    // Если запись не была остановлена вручную, сохраняем финальный текст этой сессии
+                    // и перезапускаем для продолжения записи
+                    if (isRecordingRef.current) {
+                      // Сохраняем финальный текст текущей сессии для следующего перезапуска
+                      if (lastTranscriptRef.current.trim()) {
+                        previousSessionsTextRef.current = lastTranscriptRef.current.trim();
+                      }
+                      
                       setTimeout(() => {
                         if (!stopRequestedRef.current && isRecordingRef.current) {
                           newAppleRec.start();
@@ -399,6 +417,8 @@ export const useVoiceInput = ({
                           if (stopRequestedRef.current && lastTranscriptRef.current.trim()) {
                             console.log("🎤 Apple/Safari: Sending accumulated transcript on manual stop (delayed):", lastTranscriptRef.current.trim());
                             onTranscriptRef.current?.(lastTranscriptRef.current.trim());
+                            previousSessionsTextRef.current = "";
+                            lastTranscriptRef.current = "";
                           }
                           hardResetFlags();
                         }
